@@ -1,0 +1,30 @@
+{
+  "$schema": "https://raw.githubusercontent.com/streetsidesoftware/cspell/main/cspell.schema.json",
+  "version": "0.2",
+  "language": "en",
+  "files": [
+    "**/*.{vue,ts,js,json,py,md}",
+    "!**/node_modules/**",
+    "!**/dist/**",
+    "!**/build/**"
+  ],
+  "words": [
+    // 前端业务组件 CSS 类名 / 自定义名词
+    "fgbs",
+    "subtabs",
+    "subtab",
+    "oper",
+    "collab",
+    // 后端 FastAPI 相关
+    "redoc",
+    "basedpyright",
+    "pyright",
+    "pydantic",
+    "sqlalchemy",
+    "fastapi",
+    "uvicorn",
+    "alembic"
+  ],
+  "flagWords": [],
+  "dictionaries": []
+}

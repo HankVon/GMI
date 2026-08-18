@@ -1,0 +1,97 @@
+# SSM 项目基石数据平台 — Docker Compose 部署
+# 单位机(远程)与家里机共用同一份: 库名统一为 ssm, 服务名 mysql/redis/neo4j 供 backend 容器内连接。
+# 家里机若本地已装 MySQL/Neo4j 则无需跑此 compose, 直接连单位机穿透地址即可。
+
+services:
+  # MySQL 8.0 业务库
+  mysql:
+    image: mysql:8.0
+    container_name: ssm-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: root_password
+      MYSQL_DATABASE: ssm
+      MYSQL_USER: ssm_user
+      MYSQL_PASSWORD: ssm_pass
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./sql:/docker-entrypoint-initdb.d
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --default-authentication-plugin=mysql_native_password
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis 缓存
+  redis:
+    image: redis:7-alpine
+    container_name: ssm-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # Neo4j 知识图谱(SSM 人脉/中标网络/区域图谱依赖)
+  neo4j:
+    image: neo4j:5.18-community
+    container_name: ssm-neo4j
+    restart: unless-stopped
+    environment:
+      NEO4J_AUTH: neo4j/ssm_neo4j_2026
+      NEO4J_dbms_security_auth__minimum__password__length: "8"
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:7474"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # FastAPI 后端(可选: 与本地裸跑二选一。单位机建议用容器, 家里机可裸跑连穿透地址)
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: ssm-backend
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: mysql+pymysql://ssm_user:ssm_pass@mysql:3306/ssm?charset=utf8mb4
+      REDIS_URL: redis://redis:6379/0
+      NEO4J_URI: neo4j://neo4j:7687
+      NEO4J_USER: neo4j
+      NEO4J_PASSWORD: ssm_neo4j_2026
+      SECRET_KEY: ${SECRET_KEY}
+      DEBUG: "false"
+      PORT: "8000"
+      CORS_ORIGINS: "http://localhost:5173,http://localhost"
+    ports:
+      - "8100:8000"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
+
+volumes:
+  mysql_data:
+  redis_data:
+  neo4j_data:
+  neo4j_logs:

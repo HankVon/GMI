@@ -1,0 +1,48 @@
+{
+  // 工作区根 Pyright/BasedPyright 配置:
+  // 1) backend/ 为执行根, app 是其顶层包 -> `from app.xxx` 解析为绝对导入, 消除 reportImplicitRelativeImport 误报
+  // 2) 本机解释器运行于 D:\anaconda\python.exe (装了 fastapi/sqlalchemy/redis 等全部依赖)
+  // 3) 动态 JSON 数据(pydantic dict/list)的 "Unknown"/无参泛型等严格规则对业务代码噪音过大, 予以关闭;
+  //    保留真实错误检测(reportOptionalMemberAccess/reportReturnType/reportMissingImports 等)
+  "include": ["backend/app", "backend/scripts", "backend/alembic"],
+  "exclude": [
+    "**/__pycache__",
+    "**/.pytest_cache",
+    "**/node_modules"
+  ],
+  "executionEnvironments": [
+    {
+      "root": "backend/app",
+      "pythonVersion": "3.11",
+      "pythonPlatform": "Windows",
+      "extraPaths": ["backend"]
+    },
+    {
+      "root": "backend/scripts",
+      "pythonVersion": "3.11",
+      "pythonPlatform": "Windows",
+      "extraPaths": ["backend"]
+    },
+    {
+      "root": "backend/alembic",
+      "pythonVersion": "3.11",
+      "pythonPlatform": "Windows",
+      "extraPaths": ["backend"]
+    }
+  ],
+  "reportMissingImports": "error",
+  "reportOptionalMemberAccess": "error",
+  "reportReturnType": "error",
+  "reportUnusedImport": "warning",
+  "reportUnusedVariable": "warning",
+  // ---- 以下为严格模式对动态 Python 代码的噪音规则, 关闭以消除红黄波浪线 ----
+  "reportMissingTypeArgument": "none",
+  "reportUnknownVariableType": "none",
+  "reportUnknownMemberType": "none",
+  "reportUnknownParameterType": "none",
+  "reportUnknownArgumentType": "none",
+  "reportUnknownReturnType": "none",
+  "reportAny": "none",
+  "reportExplicitAny": "none",
+  "reportDeprecated": "none"
+}

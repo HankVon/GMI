@@ -1,0 +1,1333 @@
+<!--
+  商业信息详情页 — 与项目360°详情页同款看板布局，但为只读视图（无编辑/添加/删除能力）
+  布局：顶部主信息卡(品牌+三张信息小卡) + AI分析横幅 + 统计卡片 + 进展/介绍 + 参与公司成员
+-->
+<template>
+  <div class="business-detail">
+    <el-page-header @back="$router.back()" title="返回列表">
+      <template #content>
+        <span>{{ project.name || "加载中..." }}</span>
+      </template>
+    </el-page-header>
+
+    <!-- 顶部主信息卡(白底 + 蓝色顶边, 项目名 + 状态) -->
+    <div class="fgbs-header">
+      <div class="fgbs-head-main">
+        <h2 class="fgbs-title">{{ project.name || "-" }}</h2>
+        <el-tag :type="statusTagType(project.status)" effect="dark" size="small">
+          {{ statusLabel(project.status) }}
+        </el-tag>
+        <div class="fgbs-head-spacer" />
+      </div>
+
+      <!-- 三张信息小卡: 项目编号 / 负责人 / 起止日期 -->
+      <div class="fgbs-info-cards">
+        <div class="fgbs-info-card">
+          <div class="fgbs-info-icon"><el-icon><Document /></el-icon></div>
+          <div class="fgbs-info-body">
+            <div class="fgbs-info-label">项目编号</div>
+            <div class="fgbs-info-value">{{ project.code || "-" }}</div>
+          </div>
+        </div>
+        <div class="fgbs-info-card">
+          <div class="fgbs-info-icon"><el-icon><User /></el-icon></div>
+          <div class="fgbs-info-body">
+            <div class="fgbs-info-label">项目负责人</div>
+            <div class="fgbs-info-value" :title="manager.name || '-'">{{ manager.name || "-" }}</div>
+          </div>
+        </div>
+        <div class="fgbs-info-card">
+          <div class="fgbs-info-icon"><el-icon><Calendar /></el-icon></div>
+          <div class="fgbs-info-body">
+            <div class="fgbs-info-label">启动 / 预计结束</div>
+            <div class="fgbs-info-value">{{ formatDate(project.start_date) }} → {{ formatDate(project.end_date) }}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- AI分析能力横幅 -->
+    <div class="ai-banner">
+      <div class="ai-banner-left">
+        <span class="ai-banner-label"><el-icon><MagicStick /></el-icon><b>AI分析:</b></span>
+        <span v-for="(c, i) in AI_CHIPS" :key="i" class="ai-chip" @click="openAiChat(c)">{{ c }}</span>
+      </div>
+      <el-link type="primary" :underline="false" class="ai-more" @click="openAiChat()">
+        更多分析 <el-icon><ArrowRight /></el-icon>
+      </el-link>
+    </div>
+
+    <!-- 统计卡片 -->
+    <div class="fgbs-stats">
+      <div class="fgbs-stat">
+        <div class="stat-num">{{ members.length }}</div>
+        <div class="stat-label">参与人员</div>
+      </div>
+      <div class="fgbs-stat">
+        <div class="stat-num">{{ derivedCompanies.length }}</div>
+        <div class="stat-label">参与单位</div>
+      </div>
+      <div class="fgbs-stat">
+        <div class="stat-num">{{ progressList.length }}</div>
+        <div class="stat-label">进展记录</div>
+      </div>
+      <div class="fgbs-stat">
+        <div class="stat-num">{{ activeMemberCount }}</div>
+        <div class="stat-label">在途成员</div>
+      </div>
+    </div>
+
+    <el-row :gutter="16" style="margin-top: 16px">
+      <!-- 左侧：进展 + 介绍 -->
+      <el-col :span="16">
+        <!-- 项目进展（只读） -->
+        <el-card class="section-card" shadow="never">
+          <template #header>
+            <div class="section-header">
+              <span class="section-title">项目进展</span>
+            </div>
+          </template>
+          <el-timeline v-if="progressList.length > 0">
+            <el-timeline-item
+              v-for="(node, idx) in progressList"
+              :key="node.id"
+              :timestamp="formatDateTime(node.progress_date)"
+              :type="idx === 0 ? 'primary' : ''"
+              placement="top"
+            >
+              <div class="progress-node">
+                <el-tag :type="stageTagType(node.title)" effect="light" round size="small">
+                  {{ node.title }}
+                </el-tag>
+                <div v-if="node.content" class="progress-desc">{{ node.content }}</div>
+              </div>
+            </el-timeline-item>
+          </el-timeline>
+          <el-empty v-else description="暂无进展记录" :image-size="60" />
+        </el-card>
+
+        <!-- 项目介绍（只读字段网格） -->
+        <el-card class="section-card" shadow="never">
+          <template #header>
+            <div class="section-header">
+              <span class="section-title">项目介绍</span>
+            </div>
+          </template>
+          <div class="info-grid">
+            <div
+              v-for="item in displayItems"
+              :key="item.label"
+              class="info-cell"
+              :class="{ 'info-cell-wide': item.wide }"
+            >
+              <div class="info-label">{{ item.label }}</div>
+              <div class="info-value">
+                <!-- 多选: 每个选项一个带色标签 -->
+                <template v-if="item.isMultiTag">
+                  <el-tag
+                    v-for="(lb, li) in item.multiLabels"
+                    :key="lb"
+                    :color="item.multiColors?.[li] || ''"
+                    :type="item.multiColors?.[li] ? '' : 'info'"
+                    effect="dark"
+                    size="small"
+                    style="margin-right: 4px"
+                  >
+                    {{ lb }}
+                  </el-tag>
+                </template>
+                <!-- 单选: 选项集配置颜色优先, 无颜色时回退 tagType -->
+                <el-tag
+                  v-else-if="item.isTag"
+                  :color="item.tagColor || ''"
+                  :type="item.tagColor ? '' : item.tagType"
+                  effect="dark"
+                  size="small"
+                >
+                  {{ item.value }}
+                </el-tag>
+                <template v-else-if="item.isMoney">
+                  ¥{{ formatNumber(item.value) }}
+                </template>
+                <template v-else-if="item.isSwitch">
+                  <el-tag :type="item.value ? 'success' : 'info'" size="small">
+                    {{ item.value ? "是" : "否" }}
+                  </el-tag>
+                </template>
+                <template v-else>{{ item.value ?? "-" }}</template>
+              </div>
+            </div>
+          </div>
+
+          <!-- 项目概况：小标题 + 描述内容 -->
+          <div v-if="project.description" class="overview-section">
+            <div class="overview-title">项目概况</div>
+            <div class="overview-content">{{ project.description }}</div>
+          </div>
+        </el-card>
+      </el-col>
+
+      <!-- 右侧：参与公司（由参与成员反推）+ 成员（只读） -->
+      <el-col :span="8">
+        <el-card shadow="never">
+          <template #header>
+            <div class="section-header">
+              <span class="section-title">参与公司与成员</span>
+            </div>
+          </template>
+
+          <template v-if="derivedCompanies.length > 0">
+            <div
+              v-for="c in derivedCompanies"
+              :key="c.company_id ?? 'none'"
+              class="company-group-card"
+            >
+              <div class="company-group-head">
+                <el-icon class="company-group-icon"><OfficeBuilding /></el-icon>
+                <span
+                  v-if="c.company_id"
+                  class="company-link company-group-name"
+                  @click="goCompany(c.company_id)"
+                >{{ c.company_name }}</span>
+                <span v-else class="company-group-name" style="color:#909399">未归属单位</span>
+                <span class="company-group-count">{{ c.members.length }} 人</span>
+              </div>
+              <div class="company-group-body">
+                <div
+                  v-for="m in c.members"
+                  :key="m.id"
+                  class="member-card"
+                >
+                  <el-avatar :size="32" class="member-avatar-pic" style="cursor: pointer; flex-shrink: 0" @click="goPerson(m.person_id)">
+                    {{ m.person_name?.charAt(0) }}
+                  </el-avatar>
+                  <div class="member-card-info">
+                    <div class="member-card-name-row">
+                      <strong class="person-link" @click="goPerson(m.person_id)">{{ m.person_name }}</strong>
+                      <el-tag
+                        v-if="m.role !== 'member'"
+                        size="small" :type="m.role === 'manager' ? 'danger' : 'info'"
+                        effect="light"
+                      >{{ roleLabel(m.role) }}</el-tag>
+                      <!-- 阶段: 人员属性 -->
+                      <el-tag v-if="m.stage" size="small" type="primary" effect="plain">{{ m.stage }}</el-tag>
+                      <el-tag v-else size="small" type="info" effect="plain">全程参与</el-tag>
+                    </div>
+                    <div class="member-card-sub">
+                      <span v-if="m.person_position || m.person_department" class="member-position">
+                        {{ m.person_position || m.person_department }}
+                      </span>
+                      <span class="member-card-date">
+                        {{ formatDate(m.joined_at) }}
+                        <template v-if="m.left_at"> → {{ formatDate(m.left_at) }}</template>
+                      </span>
+                    </div>
+                  </div>
+                  <el-link
+                    type="primary" :underline="false" class="member-relation-link"
+                    @click.stop="viewNetwork(m.person_id)"
+                  >查看人脉</el-link>
+                </div>
+              </div>
+            </div>
+          </template>
+          <el-empty v-else-if="exitedMembers.length === 0" description="暂无参与成员" :image-size="60" />
+
+          <!-- 已退出人员（可折叠卡片） -->
+          <div v-if="exitedMembers.length" class="exited-card">
+            <div class="exited-card-header" @click="showExited = !showExited">
+              <span class="exited-card-title">
+                已退出人员
+                <el-tag size="small" type="info">{{ exitedMembers.length }}</el-tag>
+              </span>
+              <el-icon :class="{ 'exited-arrow': true, 'is-open': showExited }">
+                <ArrowDown />
+              </el-icon>
+            </div>
+            <div v-show="showExited" class="exited-card-body">
+              <div v-for="m in exitedMembers" :key="m.id" class="member-item">
+                <el-avatar :size="30" class="member-avatar-pic" style="margin-right: 8px; cursor: pointer" @click="goPerson(m.person_id)">
+                  {{ m.person_name?.charAt(0) }}
+                </el-avatar>
+                <div class="member-info">
+                  <div class="member-name-row">
+                    <strong class="person-link" @click="goPerson(m.person_id)">{{ m.person_name }}</strong>
+                    <span v-if="m.person_position || m.person_department" class="member-position">
+                      {{ m.person_position || m.person_department }}
+                    </span>
+                    <el-tag
+                      v-if="m.role !== 'member' && !(roleLabel(m.role) === (m.person_position || m.person_department))"
+                      size="small" :type="m.role === 'manager' ? 'danger' : ''"
+                    >
+                      {{ roleLabel(m.role) }}
+                    </el-tag>
+                    <el-tag size="small" type="info" style="margin-left: 4px">已退出</el-tag>
+                  </div>
+                  <div class="member-company" v-if="m.company_name">
+                    <el-icon class="company-icon"><OfficeBuilding /></el-icon>
+                    <el-link type="info" :underline="false" size="small" @click.stop="goCompany(m.company_id)">
+                      {{ m.company_name }}
+                    </el-link>
+                  </div>
+                  <div class="member-dates">
+                    {{ formatDate(m.joined_at) }}
+                    <template v-if="m.left_at"> → {{ formatDate(m.left_at) }}</template>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </el-card>
+      </el-col>
+    </el-row>
+
+    <!-- 商情情报(意向信息 + 中标竞争情报, 情报中心整合·只读) -->
+    <el-card class="section-card" shadow="never" style="margin-top: 16px">
+      <template #header>
+        <div class="section-header">
+          <span class="section-title">商情情报</span>
+          <span class="section-sub">基于项目地域的采购意向 + 相关中标公告，把握市场机会与竞争态势</span>
+          <div class="header-actions">
+            <el-link type="primary" :underline="false" class="rel-more" @click="router.push('/workspace/intents')">
+              去意向信息 <el-icon><ArrowRight /></el-icon>
+            </el-link>
+          </div>
+        </div>
+      </template>
+
+      <el-tabs v-model="ctxTab" class="ctx-tabs">
+        <!-- Tab 1: 行业情报 -->
+        <el-tab-pane label="行业情报" name="intel">
+          <div class="ctx-toolbar">
+            <el-radio-group v-model="intelStage" size="small" @change="loadProjectIntel">
+              <el-radio-button label="">全部</el-radio-button>
+              <el-radio-button label="investment">投资意向期</el-radio-button>
+              <el-radio-button label="bidding">招标期</el-radio-button>
+              <el-radio-button label="awarded">中标公示期</el-radio-button>
+            </el-radio-group>
+            <el-tag v-if="ctxRegion" size="small" type="info" class="ctx-region-tag">{{ ctxRegion }}</el-tag>
+            <span class="ctx-hint">* 发布时间=公告实际发布日期，抓取时间=系统采集入库时间</span>
+          </div>
+          <el-table v-if="intelItems.length" :data="intelItems" size="small" v-loading="intelLoading"
+            class="clickable-table" @row-click="(r:any)=>r.url && openUrl(r.url)">
+            <el-table-column label="阶段" width="96">
+              <template #default="{ row }">
+                <el-tag size="small" :type="intelStageType(row.stage)">{{ row.stage_label }}</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column prop="title" label="标题" min-width="250" show-overflow-tooltip />
+            <el-table-column label="发布时间" width="130">
+              <template #default="{ row }">
+                <div class="time-cell">
+                  <span class="time-pub">{{ row.published_at || '-' }}</span>
+                  <span class="time-fetch">抓取 {{ row.fetched_at || '-' }}</span>
+                </div>
+              </template>
+            </el-table-column>
+            <el-table-column label="地域" width="90">
+              <template #default="{ row }">
+                <el-tag v-if="row.province" size="small" effect="plain" type="warning">{{ row.province }}</el-tag>
+                <span v-else>-</span>
+              </template>
+            </el-table-column>
+            <el-table-column prop="source_name" label="来源" width="120" show-overflow-tooltip />
+            <el-table-column prop="amount" label="预算" width="90">
+              <template #default="{ row }">{{ row.amount || '-' }}</template>
+            </el-table-column>
+          </el-table>
+          <div v-else-if="!intelLoading" class="intel-empty">
+            暂无与本项目地域/类别相关的行业动态 — 建议在「网页线索」补充抓取川藏新意向源与招标源
+          </div>
+          <div v-if="intelItems.length" class="pager">
+            <el-pagination
+              layout="total, prev, pager, next" :total="intelTotal" :page-size="intelPageSize"
+              :current-page="intelPage" @current-change="(p:number)=>{intelPage=p; loadProjectIntel();}"
+            />
+          </div>
+        </el-tab-pane>
+
+        <!-- Tab 2: 项目人脉 -->
+        <el-tab-pane label="项目人脉(触达网络)" name="network">
+          <div class="net-summary">
+            <el-statistic title="相似项目" :value="net.related_projects?.length ?? 0" />
+            <el-statistic title="相关单位" :value="net.related_companies?.length ?? 0" />
+            <el-statistic title="关键人员" :value="net.key_persons?.length ?? 0" />
+          </div>
+
+          <!-- 相似项目 -->
+          <div class="net-block">
+            <div class="net-block-title"><el-icon><FolderOpened /></el-icon><span>相似项目(同类/同地域)</span></div>
+            <div v-if="net.related_projects?.length" class="net-proj-list">
+              <div class="net-proj-item" v-for="p in net.related_projects.slice(0, 3)" :key="p.id" @click="goProject(p.id)">
+                <span class="net-proj-name">{{ p.name }}</span>
+                <el-tag size="small" effect="plain">{{ p.category_zh || '未分类' }}</el-tag>
+                <span class="net-proj-loc">{{ [p.province, p.city].filter(Boolean).join('·') || '-' }}</span>
+                <el-tag size="small" :type="p.status==='completed'?'success':p.status==='active'?'primary':'info'">
+                  {{ p.status_zh || p.status }}
+                </el-tag>
+              </div>
+              <el-link v-if="net.related_projects.length > 3" type="primary" :underline="false"
+                class="expand-link" @click="showMoreProjects = !showMoreProjects">
+                {{ showMoreProjects ? '收起' : `展开全部 ${net.related_projects.length} 个` }}
+                <el-icon><ArrowDown v-if="!showMoreProjects" /><ArrowUp v-else /></el-icon>
+              </el-link>
+              <template v-if="showMoreProjects">
+                <div class="net-proj-item" v-for="p in net.related_projects.slice(3)" :key="p.id" @click="goProject(p.id)">
+                  <span class="net-proj-name">{{ p.name }}</span>
+                  <el-tag size="small" effect="plain">{{ p.category_zh || '未分类' }}</el-tag>
+                  <span class="net-proj-loc">{{ [p.province, p.city].filter(Boolean).join('·') || '-' }}</span>
+                  <el-tag size="small" :type="p.status==='completed'?'success':p.status==='active'?'primary':'info'">
+                    {{ p.status_zh || p.status }}
+                  </el-tag>
+                </div>
+              </template>
+            </div>
+            <div v-else class="intel-empty">暂无相似项目 — 系统将随项目数据积累自动关联</div>
+          </div>
+
+          <!-- 相关单位 -->
+          <div class="net-block">
+            <div class="net-block-title">
+              <el-icon><OfficeBuilding /></el-icon><span>相关单位(做过相似项目)</span>
+              <el-tag v-if="net.related_companies?.length" size="small" type="info">{{ net.related_companies.length }} 家</el-tag>
+            </div>
+            <el-table v-if="net.related_companies?.length" :data="net.related_companies.slice(0, showMoreCompanies ? 999 : 5)" size="small" class="clickable-table"
+              @row-click="(r:any)=>goCompany(r.id)">
+              <el-table-column prop="name" label="单位名称" min-width="240" show-overflow-tooltip />
+              <el-table-column prop="roles_display" label="参与角色" min-width="160" show-overflow-tooltip />
+              <el-table-column label="参与相似项目" width="100">
+                <template #default="{ row }">{{ row.projects?.length ?? 0 }} 个</template>
+              </el-table-column>
+              <el-table-column prop="province" label="地域" width="90" />
+            </el-table>
+            <el-link v-if="net.related_companies?.length > 5" type="primary" :underline="false"
+              class="expand-link" @click="showMoreCompanies = !showMoreCompanies">
+              {{ showMoreCompanies ? '收起' : `展开全部 ${net.related_companies.length} 家` }}
+              <el-icon><ArrowDown v-if="!showMoreCompanies" /><ArrowUp v-else /></el-icon>
+            </el-link>
+            <div v-else-if="!net.related_companies?.length" class="intel-empty">暂无关联单位</div>
+          </div>
+
+          <!-- 关键人员 + 触达路径 -->
+          <div class="net-block">
+            <div class="net-block-title">
+              <el-icon><UserFilled /></el-icon><span>关键人员与触达路径</span>
+              <el-tag v-if="net.key_persons?.length" size="small" type="info">{{ net.key_persons.length }} 人</el-tag>
+            </div>
+            <div v-if="net.key_persons?.length" class="net-person-list">
+              <div class="net-person-card" v-for="p in net.key_persons.slice(0, showMorePersons ? 999 : 3)" :key="p.id">
+                <div class="net-person-head">
+                  <span class="net-person-name" @click="goPerson(p.id)">{{ p.name }}</span>
+                  <el-tag size="small" effect="plain">{{ p.roles_display || p.position || '-' }}</el-tag>
+                  <span class="net-person-company">{{ p.company_name || '-' }}</span>
+                </div>
+                <div class="net-person-projects">
+                  参与项目：
+                  <el-tag v-for="pn in p.project_names.slice(0,2)" :key="pn" size="small" effect="light" type="info">
+                    {{ pn }}
+                  </el-tag>
+                  <span v-if="p.project_names.length>2">等 {{ p.project_names.length }} 个</span>
+                </div>
+                <div class="net-paths">
+                  <div class="net-path-item" v-for="(path, i) in p.contact_paths.slice(0,3)" :key="i">
+                    <el-icon><Position /></el-icon><span>{{ path }}</span>
+                  </div>
+                  <el-link v-if="(p.contact_paths?.length || 0) > 3" type="primary" :underline="false" class="expand-link" @click="p._pathsOpen = !p._pathsOpen">
+                    {{ p._pathsOpen ? '收起路径' : `展开全部路径(${p.contact_paths.length})` }}
+                  </el-link>
+                  <template v-if="p._pathsOpen">
+                    <div class="net-path-item" v-for="(path, i) in p.contact_paths.slice(3)" :key="i">
+                      <el-icon><Position /></el-icon><span>{{ path }}</span>
+                    </div>
+                  </template>
+                </div>
+              </div>
+              <el-link v-if="net.key_persons.length > 3" type="primary" :underline="false"
+                class="expand-link" @click="showMorePersons = !showMorePersons">
+                {{ showMorePersons ? '收起' : `展开全部 ${net.key_persons.length} 人` }}
+                <el-icon><ArrowDown v-if="!showMorePersons" /><ArrowUp v-else /></el-icon>
+              </el-link>
+            </div>
+            <div v-else class="intel-empty">暂无关键人员 — 相似项目关联后自动生成</div>
+          </div>
+        </el-tab-pane>
+      </el-tabs>
+    </el-card>
+
+    <!-- AI 分析师抽屉 -->
+    <AiAnalystChat
+      :key="aiChatKey"
+      v-model="aiChatVisible"
+      :me-name="''"
+      :target-name="project.name || '目标项目'"
+      :steps="aiSteps"
+      :is-path="false"
+      :fallback-result="aiFallback"
+      :preset-question="aiPresetQuestion"
+    />
+  </div>
+</template>
+
+<script setup lang="ts">
+import { ref, onMounted, computed } from "vue";
+import { useRoute, useRouter } from "vue-router";
+import { Document, User, Calendar, MagicStick, ArrowRight, ArrowDown, ArrowUp, OfficeBuilding, Refresh, Position, FolderOpened, UserFilled } from "@element-plus/icons-vue";
+import dayjs from "dayjs";
+import api from "@/api";
+import AiAnalystChat from "@/components/AiAnalystChat.vue";
+
+const route = useRoute();
+const router = useRouter();
+// 路由 id 兜底为合法整数, 避免请求 /projects/NaN
+const projectId = Number.isFinite(Number(route.params.id)) ? Number(route.params.id) : 0;
+
+const project = ref<any>({});
+const manager = ref<any>({});
+const members = ref<any[]>([]);
+const dynamicFields = ref<any[]>([]);
+
+/* ─────────── 360° 看板: AI 分析 ─────────── */
+const AI_CHIPS = [
+  "分析项目当前风险点与推进建议",
+  "分析项目关联人脉与合作机会",
+  "分析项目预算与成本控制",
+];
+const aiChatVisible = ref(false);
+const aiChatKey = ref(0);
+const aiPresetQuestion = ref<string | undefined>(undefined);
+const aiFallback = ref<any>(null);
+
+/** 在途成员数(统计卡) */
+const activeMemberCount = computed(() => members.value.filter((m: any) => m.is_active).length);
+
+/** AI 分析上下文: 项目 + 参与单位 + 参与人员。
+ * 注意: 这是实体上下文分析(非人脉路径), 首节点不是「我」, 不假设「我」参与该项目。 */
+const aiSteps = computed(() => {
+  const arr: any[] = [];
+  if (project.value.name) {
+    arr.push({
+      type: "Project",
+      name: project.value.name,
+      status: statusLabel(project.value.status),
+    });
+  }
+  for (const c of derivedCompanies.value) {
+    arr.push({ type: "Company", name: c.company_name || "未归属单位", relation_label: "参与项目" });
+  }
+  for (const m of members.value.slice(0, 20)) {
+    arr.push({
+      type: "Person",
+      name: m.person_name,
+      relation_label: roleLabel(m.role),
+      position: m.person_position || "",
+      company_name: m.company_name || "",
+    });
+  }
+  return arr;
+});
+
+function buildAiFallback(preset?: string): any {
+  const pname = project.value.name || "该项目";
+  const summary = preset
+    ? `正在分析「${pname}」的${preset.replace(/^分析|项目|我方的|建议$/g, "").trim() || "整体"}情况…`
+    : `正在分析「${pname}」的推进与合作情况…`;
+  return {
+    summary,
+    bridges: [],
+    companies: derivedCompanies.value.map((c) => ({
+      name: c.company_name || "未归属单位",
+      tip: `${c.members.length} 人参与`,
+    })),
+    projects: [
+      {
+        name: pname,
+        tip: `状态：${statusLabel(project.value.status) || "-"}；负责人：${manager.value?.name || "-"}`,
+      },
+    ],
+    advice: [
+      "跟进未完成的进展节点, 及时补充最新进展记录",
+      "通过参与单位锁定对口联系人, 深化合作关系",
+      "关注项目验收/结算节点, 提前规划追加合作",
+    ],
+    opportunities: [
+      `当前 ${derivedCompanies.value.length} 家单位、${members.value.length} 人参与该项目`,
+      `共 ${progressList.value.length} 条进展记录${project.value.status === "active" ? "，项目仍在推进中" : ""}`,
+    ],
+  };
+}
+
+function openAiChat(preset?: string) {
+  aiPresetQuestion.value = preset || undefined;
+  try { sessionStorage.removeItem(`ssm_ai_chat__${project.value.name || "目标项目"}`); } catch { /* ignore */ }
+  aiChatKey.value++;
+  aiFallback.value = buildAiFallback(preset);
+  aiChatVisible.value = true;
+}
+
+function statusLabel(s: string): string {
+  const map: Record<string, string> = {
+    active: "进行中", suspended: "挂起", completed: "已完成", cancelled: "已取消",
+  };
+  return map[s] || s;
+}
+
+function statusTagType(s: string): string {
+  const map: Record<string, string> = {
+    active: "primary", suspended: "warning", completed: "success", cancelled: "danger",
+  };
+  return map[s] || "info";
+}
+
+function roleLabel(r: string): string {
+  return { manager: "项目负责人", member: "成员", observer: "观察者" }[r] || r;
+}
+
+function formatNumber(v: any): string {
+  if (v === undefined || v === null || v === "") return "-";
+  return Number(v).toLocaleString("zh-CN", { minimumFractionDigits: 2 });
+}
+
+function formatDate(d: string): string {
+  return d ? dayjs(d).format("YYYY-MM-DD") : "-";
+}
+
+function goPerson(personId: number) {
+  if (personId) router.push(`/workspace/persons/${personId}`);
+}
+function viewNetwork(personId: number) {
+  if (personId) router.push(`/workspace/network/${personId}`);
+}
+function goCompany(cid: number) {
+  if (cid) router.push(`/workspace/companies/${cid}`);
+}
+
+// 项目进展（只读展示）
+const progressList = ref<any[]>([]);
+
+function formatDateTime(d: string): string {
+  return d ? dayjs(d).format("YYYY-MM-DD HH:mm") : "-";
+}
+
+// 按进展阶段映射 tag 颜色（状态区分）
+function stageTagType(title: string): any {
+  if (!title) return "info";
+  if (title.includes("完工") || title.includes("已完成")) return "success";
+  if (title.includes("取消")) return "danger";
+  if (title.includes("暂停")) return "warning";
+  if (title.includes("施工")) return "primary";
+  if (title.includes("未确定")) return "info";
+  return "primary";
+}
+
+async function loadProgress() {
+  try {
+    const res: any = await api.get(`/project-progress/${projectId}`, { params: { page_size: 100 } });
+    progressList.value = (res.items || []).sort(
+      (a: any, b: any) => new Date(b.progress_date).getTime() - new Date(a.progress_date).getTime()
+    );
+  } catch { progressList.value = []; }
+}
+
+// 项目介绍展示项（内置 + 动态字段合并）
+const displayItems = computed(() => {
+  const items: Array<{
+    label: string;
+    value: any;
+    wide?: boolean;
+    isTag?: boolean;
+    tagType?: string;
+    tagColor?: string;
+    isMultiTag?: boolean;
+    multiLabels?: string[];
+    multiColors?: string[];
+    isMoney?: boolean;
+    isSwitch?: boolean;
+  }> = [];
+
+  items.push(
+    { label: "项目编号", value: project.value.code },
+    { label: "项目名称", value: project.value.name },
+    { label: "项目状态", value: statusLabel(project.value.status), isTag: true, tagType: statusTagType(project.value.status) },
+    { label: "负责人", value: manager.value?.name || (project.value.manager_id ? `ID ${project.value.manager_id}` : project.value.ext_attrs?.contact || "-") },
+    { label: "启动日期", value: project.value.start_date },
+    { label: "预计结束", value: project.value.end_date },
+    {
+      label: "省份城市",
+      value: [project.value.ext_attrs?.province, project.value.ext_attrs?.city, project.value.ext_attrs?.county]
+        .filter(Boolean).join("·") || "-",
+      wide: true,
+    },
+  );
+
+  const dynamicKeys = new Set<string>();
+  for (const f of dynamicFields.value) {
+    const raw = project.value.ext_attrs?.[f.field_key];
+    const labelMap = new Map<string, string>((f.options || []).map((o: any) => [String(o.value), String(o.label ?? "")]));
+    // 选项项配置的颜色标记(与选项集管理一致)
+    const colorMap = new Map<string, string>((f.options || []).map((o: any) => [String(o.value), String(o.color ?? "")]));
+    if (f.data_type === "select") {
+      items.push({
+        label: f.display_name,
+        value: labelMap.get(raw) ?? raw ?? "-",
+        isTag: true,
+        tagType: "",
+        tagColor: colorMap.get(raw) || "",
+      });
+    } else if (f.data_type === "multi_select") {
+      const labels = (Array.isArray(raw) ? raw : []).map((x: any) => String(labelMap.get(x) ?? x ?? ""));
+      const colors = (Array.isArray(raw) ? raw : []).map((x: any) => String(colorMap.get(x) ?? ""));
+      items.push({
+        label: f.display_name,
+        value: labels.length ? labels.join("、") : "-",
+        isTag: labels.length > 0,
+        tagType: "",
+        tagColor: colors.length ? colors[0] : "",
+        isMultiTag: labels.length > 1,
+        multiLabels: labels,
+        multiColors: colors,
+      });
+    } else {
+      items.push({
+        label: f.display_name,
+        value: raw,
+        wide: f.data_type === "textarea",
+        isMoney: f.data_type === "money",
+        isSwitch: f.data_type === "switch",
+      });
+    }
+    dynamicKeys.add(f.field_key);
+  }
+
+  // 兜底: ext_attrs 中存在但 form-config 未配置的常见业务字段(金额/联系)
+  const ext = project.value.ext_attrs || {};
+  const fallbacks: Array<{ label: string; key: string; isMoney?: boolean }> = [
+    { label: "金额", key: "amount", isMoney: true },
+    { label: "联系", key: "contact" },
+  ];
+  for (const fb of fallbacks) {
+    if (!dynamicKeys.has(fb.key) && ext[fb.key] !== undefined && ext[fb.key] !== null && ext[fb.key] !== "") {
+      items.push({ label: fb.label, value: ext[fb.key], isMoney: fb.isMoney });
+    }
+  }
+
+  return items;
+});
+
+async function loadProject() {
+  try {
+    const res: any = await api.get(`/projects/${projectId}`);
+    project.value = res;
+    if (res.manager_id) await loadManager(res.manager_id);
+  } catch { /* 跳回列表 */ }
+}
+
+async function loadManager(managerId: number) {
+  try {
+    manager.value = await api.get(`/persons/${managerId}`);
+  } catch { manager.value = {}; }
+}
+
+// 由参与成员反推参与公司 + 成员分组（仅统计在途成员；已退出人员单独展示）
+const derivedCompanies = computed(() => {
+  const map = new Map<number | string, any>();
+  for (const m of members.value) {
+    if (!m.is_active) continue;
+    const cid = m.company_id ?? "none";
+    if (!map.has(cid)) {
+      map.set(cid, {
+        company_id: m.company_id ?? null,
+        company_name: m.company_name || (m.company_id ? "未命名单位" : ""),
+        members: [] as any[],
+      });
+    }
+    map.get(cid).members.push(m);
+  }
+  const arr = Array.from(map.values());
+  arr.sort((a, b) => {
+    if (!a.company_id && b.company_id) return 1;
+    if (a.company_id && !b.company_id) return -1;
+    return (a.company_name || "").localeCompare(b.company_name || "", "zh");
+  });
+  return arr;
+});
+
+/** 已退出人员（is_active=false），单独折叠卡片展示 */
+const exitedMembers = computed(() => members.value.filter((m: any) => !m.is_active));
+
+/** 已退出折叠卡是否展开 */
+const showExited = ref(false);
+
+/** 项目进展阶段选项集(用于成员阶段属性展示) */
+const stageOptions = ref<any[]>([]);
+async function loadStageOptions() {
+  try {
+    const res: any = await api.get("/option-sets/project_progress_stage/items");
+    stageOptions.value = res.items || [];
+  } catch { stageOptions.value = []; }
+}
+
+async function loadMembers() {
+  try {
+    const res: any = await api.get(`/project-members/timeline/${projectId}`, {
+      params: { include_inactive: true },
+    });
+    members.value = res.items || [];
+  } catch { members.value = []; }
+}
+
+async function loadDynamicFields() {
+  try {
+    const res: any = await api.get(`/dynamic/project/form-config?mode=view`);
+    dynamicFields.value = res.fields || [];
+  } catch { dynamicFields.value = []; }
+}
+
+/* ─────────── 项目情报与人脉(以项目为中心, 只读) ─────────── */
+const ctxTab = ref<"intel" | "network">("intel");
+const intelItems = ref<any[]>([]);
+const intelTotal = ref(0);
+const intelLoading = ref(false);
+const intelPage = ref(1);
+const intelPageSize = ref(10);
+const intelStage = ref("");
+const ctxRegion = ref("");
+const net = ref<any>({ related_projects: [], related_companies: [], key_persons: [] });
+const showMoreProjects = ref(false);
+const showMoreCompanies = ref(false);
+const showMorePersons = ref(false);
+
+function openUrl(url: string) { window.open(url, "_blank", "noopener"); }
+function goProject(id: number) { if (id) router.push(`/workspace/projects/${id}`); }
+
+function intelStageType(s: string) {
+  return s === "investment" ? "success" : s === "bidding" ? "primary" : "warning";
+}
+
+function buildCtxRegion() {
+  const ext = project.value.ext_attrs || {};
+  ctxRegion.value = [ext.province, ext.city, ext.county].filter(Boolean).join("·") || "";
+}
+
+async function loadProjectIntel() {
+  intelLoading.value = true;
+  try {
+    const res: any = await api.get(`/projects/${projectId}/intelligence`, {
+      params: {
+        page: intelPage.value, page_size: intelPageSize.value,
+        stage: intelStage.value || undefined, days: 365,
+      },
+    });
+    intelItems.value = res.items || [];
+    intelTotal.value = res.total || 0;
+  } catch { intelItems.value = []; intelTotal.value = 0; }
+  finally { intelLoading.value = false; }
+}
+
+async function loadProjectNetwork() {
+  try {
+    const res: any = await api.get(`/projects/${projectId}/related-network`);
+    net.value = res || { related_projects: [], related_companies: [], key_persons: [] };
+  } catch { /* 拦截器 */ }
+}
+
+function loadProjectContext() {
+  buildCtxRegion();
+  loadProjectIntel();
+  loadProjectNetwork();
+}
+
+onMounted(() => {
+  loadProject();
+  loadMembers();
+  loadDynamicFields();
+  loadStageOptions();
+  loadProgress();
+  loadProjectContext();
+});
+</script>
+
+<style scoped>
+.business-detail {
+  max-width: 1400px;
+}
+
+/* ─── 360° 看板: 顶部主信息卡 ─── */
+.fgbs-header {
+  margin-top: 16px;
+  background: #fff;
+  border-top: 3px solid #2979ff;
+  border-radius: 4px;
+  padding: 18px 22px 20px;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.04);
+}
+.fgbs-head-main {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+.fgbs-title {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 600;
+  color: #1f2d3d;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.fgbs-head-spacer { flex: 1; }
+
+/* 三张信息小卡 */
+.fgbs-info-cards {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 14px;
+}
+.fgbs-info-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: #f5f8fc;
+  border-radius: 6px;
+  padding: 12px 14px;
+  min-height: 56px;
+}
+.fgbs-info-icon {
+  width: 32px; height: 32px;
+  background: #fff;
+  border: 1px solid #e6ebf5;
+  border-radius: 6px;
+  display: flex; align-items: center; justify-content: center;
+  color: #2979ff;
+  font-size: 16px;
+  flex-shrink: 0;
+}
+.fgbs-info-body { flex: 1; min-width: 0; }
+.fgbs-info-label {
+  font-size: 12px;
+  color: #909399;
+  margin-bottom: 4px;
+}
+.fgbs-info-value {
+  font-size: 14px;
+  color: #303133;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* AI分析能力横幅 */
+.ai-banner {
+  margin-top: 14px;
+  background: linear-gradient(90deg, #eef4ff 0%, #f7faff 100%);
+  border: 1px solid #dde7fa;
+  border-radius: 6px;
+  padding: 10px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.ai-banner-left {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+}
+.ai-banner-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: #2979ff;
+  font-size: 14px;
+  flex-shrink: 0;
+  margin-right: 4px;
+}
+.ai-banner-label :deep(.el-icon) { font-size: 14px; }
+.ai-banner-label b { font-weight: 700; }
+.ai-chip {
+  display: inline-block;
+  padding: 4px 12px;
+  border-radius: 14px;
+  background: #fff;
+  border: 1px solid #dde7fa;
+  color: #4b6cb7;
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: all 0.18s ease;
+  user-select: none;
+}
+.ai-chip:hover {
+  background: #2979ff;
+  color: #fff;
+  border-color: #2979ff;
+}
+.ai-more { flex-shrink: 0; }
+
+/* 统计卡片条 */
+.fgbs-stats {
+  margin-top: 14px;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 14px;
+}
+.fgbs-stat {
+  background: #fff;
+  border: 1px solid #e9edf6;
+  border-radius: 8px;
+  padding: 14px 16px;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+.fgbs-stat .stat-num {
+  font-size: 26px;
+  font-weight: 700;
+  color: #2979ff;
+  line-height: 1;
+}
+.fgbs-stat .stat-label {
+  font-size: 13px;
+  color: #909399;
+}
+
+.section-card {
+  margin-bottom: 16px;
+}
+.section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.section-title {
+  font-weight: 600;
+  font-size: 16px;
+  color: #303133;
+  position: relative;
+  padding-left: 12px;
+}
+.section-title::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 4px;
+  height: 16px;
+  background: #2979ff;
+  border-radius: 2px;
+}
+.progress-node {
+  background: #f5f7fa;
+  padding: 10px 14px;
+  border-radius: 6px;
+}
+.progress-desc {
+  font-size: 13px;
+  color: #606266;
+  margin-top: 6px;
+}
+.info-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1px;
+  background: #ebeef5;
+  border: 1px solid #ebeef5;
+  border-radius: 4px;
+  overflow: hidden;
+}
+.info-cell {
+  background: #fff;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.info-cell-wide {
+  grid-column: span 3;
+}
+.info-label {
+  font-size: 13px;
+  color: #909399;
+  font-weight: 500;
+}
+.info-value {
+  font-size: 14px;
+  color: #303133;
+  line-height: 1.5;
+  word-break: break-all;
+}
+.overview-section {
+  margin-top: 14px;
+  padding: 12px 14px;
+  background: #fafbfe;
+  border: 1px solid #eef0f6;
+  border-radius: 8px;
+}
+.overview-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #303133;
+  margin-bottom: 8px;
+  padding-left: 9px;
+  border-left: 3px solid #4f6ef7;
+}
+.overview-content {
+  font-size: 14px;
+  color: #4b5264;
+  line-height: 1.8;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+/* 成员头像统一品牌蓝渐变 */
+.member-avatar-pic {
+  background: linear-gradient(135deg, #4f8df9 0%, #2979ff 55%, #1d63e0 100%) !important;
+  color: #fff !important;
+  font-weight: 600;
+}
+.member-item {
+  display: flex;
+  align-items: center;
+}
+.member-info {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.person-link {
+  color: #2979ff;
+  cursor: pointer;
+}
+.person-link:hover {
+  text-decoration: underline;
+}
+.company-link {
+  color: #2979ff;
+  cursor: pointer;
+}
+.company-link:hover {
+  text-decoration: underline;
+}
+.member-company {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 3px;
+  color: #909399;
+  font-size: 12px;
+}
+.company-icon {
+  color: #909399;
+}
+.member-dates {
+  font-size: 12px;
+  color: #909399;
+}
+.exited-card {
+  margin-top: 12px;
+  border: 1px solid #ebeef5;
+  border-radius: 6px;
+  background: #fafafa;
+  overflow: hidden;
+}
+.exited-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  cursor: pointer;
+  user-select: none;
+  background: #f5f7fa;
+}
+.exited-card-header:hover {
+  background: #eef1f6;
+}
+.exited-card-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: #606266;
+  font-weight: 500;
+}
+.exited-arrow {
+  transition: transform 0.25s;
+  color: #909399;
+}
+.exited-arrow.is-open {
+  transform: rotate(180deg);
+}
+.exited-card-body {
+  padding: 8px 12px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.exited-card-body .member-item {
+  padding: 6px 8px;
+  background: #fff;
+  border-radius: 6px;
+  border: 1px solid #f0f2f5;
+}
+.member-name-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.member-position {
+  font-size: 12px;
+  color: #909399;
+  font-weight: normal;
+}
+/* 查看人脉(与项目/人员/单位详情页一致的浅蓝链接样式) */
+.member-relation-link {
+  flex-shrink: 0;
+  margin-left: 8px;
+  font-size: 12px !important;
+  padding: 0 8px;
+  height: 22px;
+  line-height: 20px;
+  border: 1px solid #d9ecff;
+  background: #ecf5ff;
+  color: #2979ff !important;
+  border-radius: 4px;
+}
+.member-relation-link:hover {
+  background: #2979ff;
+  color: #fff !important;
+  border-color: #2979ff;
+}
+/* 公司分组卡片: 以公司为主体, 阶段作为人员属性 tag */
+.company-group-card {
+  background: #fafbfd;
+  border: 1px solid #eceff5;
+  border-radius: 8px;
+  margin-bottom: 12px;
+  overflow: hidden;
+}
+.company-group-card:last-child { margin-bottom: 0; }
+.company-group-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 12px;
+  background: #f3f6fb;
+  border-bottom: 1px solid #eceff5;
+}
+.company-group-icon { color: #2979ff; font-size: 14px; flex-shrink: 0; }
+.company-group-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: #303133;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.company-group-name:hover { color: #2979ff; text-decoration: underline; }
+.company-group-count {
+  font-size: 12px;
+  color: #909399;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+.company-group-body { padding: 8px 12px 10px; }
+.member-card {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: #fff;
+  border: 1px solid #f0f2f6;
+  border-radius: 6px;
+  padding: 7px 9px;
+  margin-top: 6px;
+  transition: border-color 0.18s ease;
+}
+.member-card:hover { border-color: #b9d4ff; }
+.member-card-info { flex: 1; min-width: 0; }
+.member-card-name-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.member-card-sub {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 2px;
+  font-size: 12px;
+  color: #909399;
+}
+.member-card-company {
+  font-size: 12px;
+  color: #4b5264;
+}
+.member-card-date { color: #b0b3bd; }
+.company-members {
+  margin-top: 8px;
+  margin-left: 12px;
+  padding-left: 10px;
+  border-left: 2px solid #e4e7ed;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+@media (max-width: 900px) {
+  .fgbs-info-cards { grid-template-columns: 1fr; }
+  .fgbs-stats { grid-template-columns: 1fr 1fr; }
+}
+
+/* ─── 项目情报与人脉(与项目详情同构) ─── */
+.header-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.rel-more { font-size: 12px; display: inline-flex; align-items: center; gap: 2px; }
+.ctx-tabs :deep(.el-tabs__header) { margin-bottom: 10px; }
+.ctx-toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
+.ctx-region-tag { margin-left: 4px; }
+.ctx-hint { font-size: 12px; color: #c0c4cc; }
+.intel-empty { color: #c0c4cc; font-size: 12.5px; padding: 14px 4px; }
+.time-cell { display: flex; flex-direction: column; line-height: 1.4; }
+.time-pub { color: #303133; font-size: 12.5px; }
+.time-fetch { color: #c0c4cc; font-size: 11px; }
+.clickable-table :deep(.el-table__row) { cursor: pointer; }
+.clickable-table :deep(.el-table__row:hover > td.el-table__cell) { background-color: #eef5ff !important; }
+
+.net-summary { display: flex; gap: 40px; margin-bottom: 14px; }
+.net-summary :deep(.el-statistic__number) { color: #2979ff; font-size: 22px; }
+.net-block { margin-bottom: 14px; }
+.net-block-title {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 13.5px; font-weight: 600; color: #1f2d3d; margin-bottom: 8px;
+}
+.net-block-title :deep(.el-icon) { color: #2979ff; }
+.net-proj-list { display: flex; flex-direction: column; gap: 6px; }
+.net-proj-item {
+  display: flex; align-items: center; gap: 10px;
+  background: #f8fbff; border: 1px solid #eef2f9; border-radius: 6px; padding: 8px 12px;
+  cursor: pointer; font-size: 12.5px;
+}
+.net-proj-item:hover { background: #eef5ff; }
+.net-proj-name { color: #2979ff; font-weight: 500; min-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.net-proj-loc { color: #909399; font-size: 12px; }
+.net-person-list { display: flex; flex-direction: column; gap: 10px; }
+.net-person-card {
+  background: #f8fbff; border: 1px solid #eef2f9; border-radius: 8px; padding: 10px 14px;
+}
+.net-person-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.net-person-name { color: #2979ff; font-weight: 600; font-size: 14px; cursor: pointer; }
+.net-person-name:hover { text-decoration: underline; }
+.net-person-company { color: #606266; font-size: 12.5px; }
+.net-person-projects { margin-top: 6px; font-size: 12.5px; color: #606266; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.net-paths { margin-top: 8px; display: flex; flex-direction: column; gap: 4px; }
+.net-path-item { display: flex; align-items: flex-start; gap: 6px; font-size: 12.5px; color: #4b6cb7; }
+.net-path-item :deep(.el-icon) { color: #2979ff; margin-top: 2px; }
+.expand-link { display: inline-flex; align-items: center; gap: 2px; margin-top: 8px; font-size: 12.5px; }
+.pager { display: flex; justify-content: flex-end; margin-top: 10px; }
+</style>
