@@ -23,6 +23,9 @@ frontend/.env.*
 # 前端构建产物(由 npm run build 生成, 不应入库)
 frontend/dist/
 
+# 数据迁移目录(含业务数据 dump, 各机不同, 绝不提交)
+migrate_in/
+
 # 编辑器/系统
 .DS_Store
 Thumbs.db

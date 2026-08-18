@@ -45,7 +45,7 @@ services:
 
   # Neo4j 知识图谱(SSM 人脉/中标网络/区域图谱依赖)
   neo4j:
-    image: neo4j:5.18-community
+    image: neo4j:2026.05.0
     container_name: ssm-neo4j
     restart: unless-stopped
     environment:
@@ -82,6 +82,8 @@ services:
       CORS_ORIGINS: "http://localhost:5173,http://localhost"
     ports:
       - "8100:8000"
+    volumes:
+      - ./sql:/sql:ro
     depends_on:
       mysql:
         condition: service_healthy
