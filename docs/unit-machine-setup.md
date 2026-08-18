@@ -19,19 +19,21 @@
 
 ---
 
-## 任务 0：拿到代码（两种任选其一）
+## 任务 0：拿到代码（直接 clone GitHub 远程，最快）
 
-**方式 A（推荐，用 git）**：家里机已 `git init` 并提交了。把家里机整个 `D:\Geology\SSM` 目录（已自带 `.git` 和 `.gitignore`）通过 TeamViewer 拷到单位机**相同路径** `D:\Geology\SSM`。
-- 不要单独拷 `.env`、`node_modules`、`frontend/dist`、`runtime` —— 它们已在 `.gitignore` 里，不会进 git，也无需迁移。
+家里机代码已推到公开仓库 **`https://github.com/HankVon/GMI.git`**（分支 `main`，commit `ed09195`）。单位机直接 clone 即可，**不用 TeamViewer 拷目录**：
 
-**方式 B（bare 中转库，后续双向同步用）**：在单位机
 ```
+git clone https://github.com/HankVon/GMI.git D:\Geology\SSM
 cd D:\Geology\SSM
-git clone --bare . D:\Geology\SSM_mirror.git
+git log --oneline -1    # 应显示 ed09195
 ```
-家里机后续 `git remote add origin <单位机bare路径或共享盘路径>` 即可双向 push/pull。
 
-> 验证：`cd D:\Geology\SSM && git log --oneline -1` 应显示 `25427a7`。
+- 不要单独拷 `.env`、`node_modules`、`frontend/dist`、`runtime` —— 它们已在 `.gitignore` 里，不会进 git，也无需迁移（clone 下来就没有这些，正常）。
+- 若 clone 提示认证：用 Git Credential Manager 弹窗登录，或 `git clone https://<你的TOKEN>@github.com/HankVon/GMI.git`（token 需 `repo` 权限）。
+- clone 后本地 `main` 已跟踪 `origin/main`，后续直接 `git pull` / `git push` 同步。
+
+> **后续双向同步**：家里机改完 `git push`，单位机 `git pull origin main`；单位机若也改代码，`git commit` 后 `git push origin main`，家里机 `git pull`。统一走这个 GitHub 远程，无需 bare 中转库。
 
 ---
 
@@ -151,12 +153,12 @@ ingress:
 
 ---
 
-## 任务 7（可选）：代码双向同步配置
-若想两边都能改代码并互相同步：
-- 单位机已建 bare 库 `D:\Geology\SSM_mirror.git`（任务 0 方式 B）。
-- 家里机：`git remote add origin <单位机bare路径> && git push origin main`
-- 单位机（若也在单位机改）：`git remote add origin D:\Geology\SSM_mirror.git && git pull origin main`
-- 之后两边 `git pull` / `git push origin main` 同步。
+## 任务 7（可选）：代码双向同步
+代码已走 GitHub 远程（`origin` = `https://github.com/HankVon/GMI.git`），两边直接同步，无需 bare 中转库：
+- 家里机改完：`git add . && git commit -m "..." && git push origin main`
+- 单位机拉取：`git pull origin main`
+- 单位机若也改代码：`git commit` 后 `git push origin main`，家里机 `git pull origin main`
+- 若两边并发改同一文件冲突，先 `git pull` 解决冲突再 `git push`。
 
 ---
 
