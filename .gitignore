@@ -26,6 +26,9 @@ frontend/dist/
 # 数据迁移目录(含业务数据 dump, 各机不同, 绝不提交)
 migrate_in/
 
+# 临时隧道地址(每次重启变化, 含暴露信息, 绝不提交)
+tunnel_url.txt
+
 # 编辑器/系统
 .DS_Store
 Thumbs.db

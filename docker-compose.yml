@@ -79,7 +79,7 @@ services:
       SECRET_KEY: ${SECRET_KEY}
       DEBUG: "false"
       PORT: "8000"
-      CORS_ORIGINS: "http://localhost:5173,http://localhost"
+      CORS_ORIGINS: "http://localhost:5173,http://localhost:8080,http://localhost"
     ports:
       - "8100:8000"
     volumes:
@@ -91,6 +91,28 @@ services:
         condition: service_healthy
       neo4j:
         condition: service_healthy
+
+  # 前端: 用已缓存的 backend(python)镜像托管 dist + /api 反代到 backend
+  # 不依赖 node/nginx 镜像拉取。dist 由家里机 npm run build 后拷到 frontend/dist
+  frontend:
+    image: gmi-backend:latest
+    container_name: ssm-frontend
+    restart: unless-stopped
+    environment:
+      DIST_DIR: /app/dist
+      BACKEND_TARGET: http://backend:8000
+      PORT: "80"
+    ports:
+      - "8080:80"
+    volumes:
+      - ./frontend:/app:ro
+    # 覆盖后端启动命令, 改为跑前端托管脚本
+    command: ["python", "/app/serve.py"]
+    # 禁用从 backend 镜像继承的 healthcheck(serve.py 无 /health 端点)
+    healthcheck:
+      disable: true
+    depends_on:
+      - backend
 
 volumes:
   mysql_data:
