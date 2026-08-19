@@ -64,7 +64,7 @@
         <div class="stat-label">参与人员</div>
       </div>
       <div class="fgbs-stat">
-        <div class="stat-num">{{ derivedCompanies.length }}</div>
+        <div class="stat-num">{{ allCompanyCount }}</div>
         <div class="stat-label">参与单位</div>
       </div>
       <div class="fgbs-stat">
@@ -174,6 +174,34 @@
             <div class="section-header">
               <span class="section-title">参与公司与成员</span>
             </div>
+          </template>
+
+          <!-- 项目参与单位(直接关联, 含法人单位主体, 标注角色) -->
+          <template v-if="projectCompanies.length > 0">
+            <div class="project-companies-block">
+              <div class="project-companies-title">
+                项目参与单位
+                <el-tag size="small" type="info">{{ projectCompanies.length }}</el-tag>
+              </div>
+              <div
+                v-for="c in projectCompanies"
+                :key="c.company_id"
+                class="project-company-row"
+              >
+                <el-icon class="company-group-icon"><OfficeBuilding /></el-icon>
+                <span
+                  class="company-link project-company-name"
+                  @click="goCompany(c.company_id)"
+                >{{ c.company_name }}</span>
+                <el-tag
+                  v-if="c.role"
+                  size="small"
+                  :type="c.role === 'constructor' ? 'warning' : 'info'"
+                  effect="light"
+                >{{ companyRoleLabel(c.role) }}</el-tag>
+              </div>
+            </div>
+            <el-divider style="margin: 12px 0" />
           </template>
 
           <template v-if="derivedCompanies.length > 0">
@@ -451,6 +479,45 @@
             <div v-else class="intel-empty">暂无关键人员 — 相似项目关联后自动生成</div>
           </div>
         </el-tab-pane>
+        <!-- Tab 3: 跟踪情报(自动归整到本项目, 按阶段监控) -->
+        <el-tab-pane label="跟踪情报" name="tracked">
+          <div class="ctx-toolbar">
+            <span class="ctx-hint">系统自动把意向/招标/中标/施工线索归整到本项目(地域+类别+单位强匹配, 防张冠李戴), 随采集自动累积</span>
+            <el-button size="small" :loading="trackedLoading" @click="loadTracked">
+              <el-icon><Refresh /></el-icon>刷新
+            </el-button>
+          </div>
+
+          <div v-if="!trackedGroups.length && !trackedLoading" class="intel-empty">
+            暂无已归整的跟踪线索 — 点击「刷新」或等待每日自动匹配
+          </div>
+          <template v-else>
+            <div class="tracked-group" v-for="g in trackedGroups" :key="g.stage">
+              <div class="tracked-group-head">
+                <el-tag size="small" :type="intelStageType(g.stage)" effect="dark">{{ g.stage_label }}</el-tag>
+                <span class="tracked-group-count">{{ g.items.length }} 条</span>
+              </div>
+              <el-table :data="g.items" size="small" class="clickable-table"
+                @row-click="(r:any)=>r.url && openUrl(r.url)">
+                <el-table-column prop="title" label="线索标题" min-width="280" show-overflow-tooltip />
+                <el-table-column label="发布时间" width="100">
+                  <template #default="{ row }">{{ row.published_at || '-' }}</template>
+                </el-table-column>
+                <el-table-column prop="source_name" label="来源" width="130" show-overflow-tooltip />
+                <el-table-column prop="purchaser" label="采购人/业主" width="140" show-overflow-tooltip />
+                <el-table-column label="关联度" width="110">
+                  <template #default="{ row }">
+                    <el-tooltip :content="`依据: ${row.match_reason || '-'}`" placement="top">
+                      <el-tag size="small" :type="row.confidence >= 0.9 ? 'success' : 'warning'">
+                        {{ Math.round(row.confidence * 100) }}%
+                      </el-tag>
+                    </el-tooltip>
+                  </template>
+                </el-table-column>
+              </el-table>
+            </div>
+          </template>
+        </el-tab-pane>
       </el-tabs>
     </el-card>
 
@@ -471,7 +538,7 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import { Document, User, Calendar, MagicStick, ArrowRight, ArrowDown, ArrowUp, OfficeBuilding, Refresh, Position, FolderOpened, UserFilled } from "@element-plus/icons-vue";
+import { Document, User, Calendar, MagicStick, ArrowRight, ArrowDown, ArrowUp, OfficeBuilding, Refresh, Position, FolderOpened, UserFilled, VideoPlay } from "@element-plus/icons-vue";
 import dayjs from "dayjs";
 import api from "@/api";
 import AiAnalystChat from "@/components/AiAnalystChat.vue";
@@ -499,6 +566,14 @@ const aiFallback = ref<any>(null);
 
 /** 在途成员数(统计卡) */
 const activeMemberCount = computed(() => members.value.filter((m: any) => m.is_active).length);
+
+/** 参与单位总数 = 项目直接关联单位(project_company) + 成员反推公司, 去重 */
+const allCompanyCount = computed(() => {
+  const ids = new Set<number>();
+  projectCompanies.value.forEach((c: any) => c.company_id && ids.add(c.company_id));
+  derivedCompanies.value.forEach((c: any) => c.company_id && ids.add(c.company_id));
+  return ids.size;
+});
 
 /** AI 分析上下文: 项目 + 参与单位 + 参与人员。
  * 注意: 这是实体上下文分析(非人脉路径), 首节点不是「我」, 不假设「我」参与该项目。 */
@@ -783,7 +858,9 @@ async function loadDynamicFields() {
 }
 
 /* ─────────── 项目情报与人脉(以项目为中心, 只读) ─────────── */
-const ctxTab = ref<"intel" | "network">("intel");
+const ctxTab = ref<"intel" | "network" | "tracked">("intel");
+const trackedGroups = ref<any[]>([]);
+const trackedLoading = ref(false);
 const intelItems = ref<any[]>([]);
 const intelTotal = ref(0);
 const intelLoading = ref(false);
@@ -830,19 +907,52 @@ async function loadProjectNetwork() {
   } catch { /* 拦截器 */ }
 }
 
+/** 跟踪情报: 已自动归整到本项目的线索(按阶段分组) */
+async function loadTracked() {
+  trackedLoading.value = true;
+  try {
+    const res: any = await api.get(`/projects/tracker/${projectId}`);
+    trackedGroups.value = res.data?.groups || [];
+  } catch { trackedGroups.value = []; }
+  finally { trackedLoading.value = false; }
+}
+
 function loadProjectContext() {
   buildCtxRegion();
   loadProjectIntel();
   loadProjectNetwork();
 }
 
+// 项目-单位直接关联(project_company): 含法人单位/业主等, 独立展示项目参与主体
+const projectCompanies = ref<any[]>([]);
+async function loadProjectCompanies() {
+  try {
+    const res: any = await api.get(`/project-companies/timeline/${projectId}`, {
+      params: { include_inactive: true },
+    });
+    projectCompanies.value = (res.items || []).filter((it: any) => it.is_active);
+  } catch { projectCompanies.value = []; }
+}
+
+// 项目单位角色中文名
+const COMPANY_ROLE_LABEL: Record<string, string> = {
+  owner: "业主", designer: "设计", supervisor: "监理",
+  constructor: "施工", partner: "合作伙伴",
+};
+function companyRoleLabel(role?: string) {
+  if (!role) return "";
+  return COMPANY_ROLE_LABEL[role] || role;
+}
+
 onMounted(() => {
   loadProject();
   loadMembers();
+  loadProjectCompanies();
   loadDynamicFields();
   loadStageOptions();
   loadProgress();
   loadProjectContext();
+  loadTracked();
 });
 </script>
 

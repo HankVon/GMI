@@ -29,15 +29,17 @@
 
     <DynamicTable
       entity-type="projects"
-    :data="list"
-    :columns="columns"
-    :loading="loading"
-    :total="total"
-    :can-export="true"
-    @sort-change="handleSort"
-    @row-click="(row: any) => $router.push(`/workspace/business/${row.id}`)"
-    @page-change="handlePage"
-  >
+      :data="list"
+      :columns="columns"
+      :loading="loading"
+      :total="total"
+      :can-export="true"
+      :keyword="keyword"
+      @search="handleSearch"
+      @sort-change="handleSort"
+      @row-click="(row: any) => $router.push(`/workspace/business/${row.id}`)"
+      @page-change="handlePage"
+    >
     </DynamicTable>
   </div>
 </template>

@@ -165,12 +165,11 @@ async def project_intelligence(
     # 项目是否具备市/县级地域信息(决定关联是否强制地域约束, 防跨市乱关联)
     has_geo = bool(city_ctx) or bool(county_ctx)
 
-    # 关联必要条件: 至少 1 个「强相关」:
-    #   - 纯主题强相关: 类别词命中 ≥2 个 / 类别词+项目核心词各命中 ≥1 / 纯项目核心词命中
-    #   - 地域+主题: 市级/县级地域命中 且 主题词(类别词或核心词)至少命中 1 个
-    # 仅省级命中 / 仅地域命中 / 仅单个类别词(地质灾害/勘察/矿业权…)命中 → 不关联,
-    # 防止同市无关公告(铁路/光伏)、医疗「防治」公告、以及一条「地质灾害」
-    # 公告命中全部地灾项目的量级放大。
+    # 关联必要条件(2026-08 收缩: 同区县 + 同类别):
+    #   1. 情报文本必须命中项目的「同类别词」(category 词表);
+    #   2. 且情报须位于「同一区县(项目无区县时退化为同市)」。
+    # 省级(无市/县) / 跨区县 / 跨市 / 非同类别 的公告一律不关联,
+    # 防止跨区县乱关联, 以及「地质灾害」一条公告命中全部地灾项目的量级放大。
 
     # 1) 投资意向期
     if want["investment"]:
@@ -180,10 +179,10 @@ async def project_intelligence(
         for it in db.execute(stmt.order_by(IntentNotice.published_at.desc())).scalars().all():
             tpool = f"{it.title or ''} {it.region or ''}"
             r_score, r_strong = _zh_region_overlap(prov_ctx, city_ctx, county_ctx, it.province or "", it.city or "", it.county or "", tpool)
-            k_score, k_strong = _keyword_overlap(ctx["name_kw"], tpool, ctx["category"])
-            # 强相关 = 纯主题强相关(k_strong) 或 地域(市/县级)命中+主题词命中(r_strong and k_score>0)
-            if not _related_by_geo_or_topic(r_strong, k_score, k_strong, has_geo):
-                continue  # 无强相关(仅地域/仅宽泛词/仅省级, 或跨市未命中) → 不关联
+            k_score, k_strong, cat_hit = _keyword_overlap(ctx["name_kw"], tpool, ctx["category"])
+            # 同区县(无区县则同市) + 同类别 才关联
+            if not _is_industry_related(county_ctx, city_ctx, tpool, cat_hit):
+                continue  # 不同区县/市 或 非同类别 → 不关联
             items.append(_mk_item("investment", "投资意向期", it.id, it.title or "", it.url or "",
                                   it.province or "", it.city or "", it.county or "",
                                   it.published_at, it.published_at, it.dept or "政务源",
@@ -205,9 +204,9 @@ async def project_intelligence(
             if not tgt:
                 continue
             r_score, r_strong = _zh_region_overlap(prov_ctx, city_ctx, county_ctx, tgt, "", "", tpool)
-            k_score, k_strong = _keyword_overlap(ctx["name_kw"], tpool, ctx["category"])
-            if not _related_by_geo_or_topic(r_strong, k_score, k_strong, has_geo):
-                continue  # 无强相关(仅地域/仅宽泛词/仅省级, 或跨市未命中) → 不关联
+            k_score, k_strong, cat_hit = _keyword_overlap(ctx["name_kw"], tpool, ctx["category"])
+            if not _is_industry_related(county_ctx, city_ctx, tpool, cat_hit):
+                continue  # 不同区县/市 或 非同类别 → 不关联
             items.append(_mk_item("bidding", "招标期", c.id, c.title or "", c.url or "",
                                   tgt, "", "",
                                   c.published_at, c.fetched_at, c.source_name or "网页线索",
@@ -228,9 +227,9 @@ async def project_intelligence(
             if not tgt:
                 continue
             r_score, r_strong = _zh_region_overlap(prov_ctx, city_ctx, county_ctx, tgt, "", "", tpool)
-            k_score, k_strong = _keyword_overlap(ctx["name_kw"], tpool, ctx["category"])
-            if not _related_by_geo_or_topic(r_strong, k_score, k_strong, has_geo):
-                continue  # 无强相关(仅地域/仅宽泛词/仅省级, 或跨市未命中) → 不关联
+            k_score, k_strong, cat_hit = _keyword_overlap(ctx["name_kw"], tpool, ctx["category"])
+            if not _is_industry_related(county_ctx, city_ctx, tpool, cat_hit):
+                continue  # 不同区县/市 或 非同类别 → 不关联
             suppliers = ", ".join([s.get("supplier", "") for s in (bn.meta or {}).get("suppliers", []) if s.get("supplier")])
             items.append(_mk_item("awarded", "中标公示期", bn.id, bn.title or "", bn.url or "",
                                   tgt, "", "",
@@ -258,8 +257,8 @@ async def project_intelligence(
             if not tgt:
                 continue
             r_score, r_strong = _zh_region_overlap(prov_ctx, city_ctx, county_ctx, tgt, "", "", tpool)
-            k_score, k_strong = _keyword_overlap(ctx["name_kw"], tpool, ctx["category"])
-            if not _related_by_geo_or_topic(r_strong, k_score, k_strong, has_geo):
+            k_score, k_strong, cat_hit = _keyword_overlap(ctx["name_kw"], tpool, ctx["category"])
+            if not _is_industry_related(county_ctx, city_ctx, tpool, cat_hit):
                 continue
             items.append(_mk_item("awarded", "中标公示期", c.id, c.title or "", c.url or "",
                                   tgt, "", "",
@@ -292,18 +291,22 @@ def _mk_item(stage, stage_label, id_, title, url, province, city, county,
     }
 
 
-def _related_by_geo_or_topic(r_strong: bool, k_score: int, k_strong: bool, has_geo: bool) -> bool:
-    """行业情报关联判定(2026-08 收紧跨市乱关联)。
+def _is_industry_related(county_ctx: str, city_ctx: str, tpool: str, cat_hit: bool) -> bool:
+    """行业情报关联判定(2026-08 收缩: 同区县 + 同类别)。
 
-    has_geo=True(项目 ext_attrs 含 city 或 county): 必须「市/县级地域命中 + 主题词命中」,
-        不再允许纯主题强相关兜底, 防止同省不同市的地灾公告互相乱关联
-        (如「凉山会理市项目」不应关联「绵阳游仙区公告」)。
-    has_geo=False(项目仅省级, 无市/县): 退化为原行为——允许「省级 + 主题强相关」兜底,
-        避免无市/县信息的旧项目情报整体变空。
+    仅当情报文本同时满足:
+      1. 命中项目「同类别词」(cat_hit=True);
+      2. 位于「同一区县」(项目有 county 则文本须含 county 名;
+         项目无 county 仅有 city 时退化为同市, 文本须含 city 名)。
+    省级(无市/县)或跨区县/市的公告一律不关联。
     """
-    if has_geo:
-        return bool(r_strong and k_score > 0)
-    return bool((r_strong and k_score > 0) or k_strong)
+    if not cat_hit:
+        return False
+    if county_ctx:
+        return county_ctx in tpool
+    if city_ctx:
+        return city_ctx in tpool
+    return False
 
 
 def _zh_region_overlap(p1, c1, k1, p2, c2, k2, text2: str) -> tuple:
@@ -385,7 +388,7 @@ def _keyword_overlap(kw: str, text: str, category: str = "") -> tuple:
     strong = (len(cat_hits) >= 2
               or (bool(cat_hits) and bool(kw_hits))
               or bool(kw_hits))
-    return score, strong
+    return score, strong, bool(cat_hits)
 
 
 # 机构名后缀: 以这些字结尾的中文段几乎都是机构/场所名(自然资源局/财政局/发展改革委/
