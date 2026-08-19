@@ -912,7 +912,7 @@ async function loadTracked() {
   trackedLoading.value = true;
   try {
     const res: any = await api.get(`/projects/tracker/${projectId}`);
-    trackedGroups.value = res.data?.groups || [];
+    trackedGroups.value = res.groups || [];
   } catch { trackedGroups.value = []; }
   finally { trackedLoading.value = false; }
 }
