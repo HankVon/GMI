@@ -2,7 +2,7 @@
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
-from sqlalchemy import select, func, cast, Float, and_, or_
+from sqlalchemy import select, func, cast, Float, and_, or_, text
 
 from app.database import get_db
 from app.models.company import Company, ProjectCompany
@@ -72,6 +72,59 @@ def _load_meta_list(db: Session, entity_type: str) -> list[FieldMetadata]:
     ).scalars().all()
 
 
+def _build_company_stats(db: Session, companies: list) -> list:
+    """为列表页聚合展示字段: 中标数/最近中标/联系方式/工商扩展字段。
+
+    资质数(qualification)、诚信分(credit_record) 当前数据表为空, 返回 0/None。
+    """
+    ids = [c.id for c in companies]
+    stats: dict = {i: {"bid_count": 0, "latest_bid_at": None,
+                       "contact_phone": None, "ownership": None,
+                       "business_scope": None, "establish_date": None,
+                       "registered_capital": None} for i in ids}
+    if ids:
+        id_t = tuple(ids)
+        # 中标(采购人侧)
+        rows = db.execute(text(
+            "SELECT purchaser_company_id, COUNT(*), MAX(published_at) FROM bid_notice "
+            "WHERE is_deleted=0 AND purchaser_company_id IN :ids GROUP BY purchaser_company_id"
+        ), {"ids": id_t}).all()
+        for cid, cnt, mx in rows:
+            if cid in stats:
+                stats[cid]["bid_count"] += int(cnt)
+                if mx and (stats[cid]["latest_bid_at"] is None or mx > stats[cid]["latest_bid_at"]):
+                    stats[cid]["latest_bid_at"] = mx.strftime("%Y-%m-%d")
+        # 中标(供应商侧: meta 含公司名称)
+        sup = db.execute(text(
+            "SELECT c.id, COUNT(*), MAX(b.published_at) FROM bid_notice b "
+            "JOIN company c ON c.id IN :ids AND JSON_SEARCH(b.meta,'one', c.name) IS NOT NULL "
+            "WHERE b.is_deleted=0 GROUP BY c.id"
+        ), {"ids": id_t}).all()
+        for cid, cnt, mx in sup:
+            if cid in stats:
+                stats[cid]["bid_count"] += int(cnt)
+                if mx and (stats[cid]["latest_bid_at"] is None or mx > stats[cid]["latest_bid_at"]):
+                    stats[cid]["latest_bid_at"] = mx.strftime("%Y-%m-%d")
+    items = []
+    for c in companies:
+        ext = c.ext_attrs or {}
+        d = CompanyResponse.model_validate(c).model_dump()
+        st = stats.get(c.id, {})
+        d.update({
+            "bid_count": st["bid_count"],
+            "latest_bid_at": st["latest_bid_at"],
+            "qua_count": 0,
+            "credit_score": None,
+            "contact_phone": ext.get("contact_phone"),
+            "ownership": ext.get("ownership"),
+            "business_scope": ext.get("business_scope"),
+            "establish_date": ext.get("establish_date"),
+            "registered_capital": ext.get("registered_capital"),
+        })
+        items.append(d)
+    return items
+
+
 @router.get("", response_model=PaginatedResponse)
 async def list_companies(
     page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100),
@@ -79,14 +132,84 @@ async def list_companies(
     filters: Optional[str] = None,
     sort_field: Optional[str] = None,
     sort_order: str = Query("desc", pattern="^(asc|desc)$"),
+    # ── 分项查询「查企业」筛选增强 ──
+    province: Optional[str] = None,
+    credit_level: Optional[str] = None,
+    address: Optional[str] = None,
+    ownership: Optional[str] = None,
+    scope: Optional[str] = None,
+    registered_capital_min: Optional[float] = None,
+    registered_capital_max: Optional[float] = None,
+    est_from: Optional[str] = None,
+    est_to: Optional[str] = None,
+    q_mode: Optional[str] = None,
     db: Session = Depends(get_db),
     user: dict = Depends(get_current_user),
 ):
     stmt = select(Company).where(Company.is_deleted == False)
+    # 数据范围过滤(分发权限): 未启用数据范围时保持现状(不过滤)
+    from app.services.data_scope_service import resolve_scope, scope_filter
+    data_scope = resolve_scope(db, user, "company")
+    cond = scope_filter(data_scope, Company, "company", user_id=user.get("user_id"))
+    if cond is not None:
+        stmt = stmt.where(cond)
     if company_type:
         stmt = stmt.where(Company.company_type == company_type)
+    if province:
+        stmt = stmt.where(Company.province == province)
+
+    # 关键词检索模式: fuzzy=按空格拆词 OR 匹配; exact=整词 contains
     if keyword:
-        stmt = stmt.where(Company.name.contains(keyword))
+        if q_mode == "exact":
+            stmt = stmt.where(Company.name.contains(keyword))
+        else:
+            toks = [t for t in keyword.split() if t]
+            if toks:
+                stmt = stmt.where(or_(*[Company.name.contains(t) for t in toks]))
+            else:
+                stmt = stmt.where(Company.name.contains(keyword))
+
+    # 企业入库(信用等级)等值
+    if credit_level:
+        stmt = stmt.where(Company.credit_level == credit_level)
+    # 注册地址模糊
+    if address:
+        stmt = stmt.where(Company.address.contains(address))
+    # 企业性质(ext_attrs.ownership 等值)
+    if ownership:
+        stmt = stmt.where(
+            func.json_unquote(func.json_extract(Company.ext_attrs, "$.ownership")) == ownership
+        )
+    # 经营范围(ext_attrs.business_scope 多关键词 AND)
+    if scope:
+        for kw in [k for k in scope.split() if k]:
+            stmt = stmt.where(
+                func.json_unquote(func.json_extract(Company.ext_attrs, "$.business_scope")).contains(kw)
+            )
+    # 成立日期(ext_attrs.establish_date 字符串范围, ISO 可直接比较)
+    if est_from:
+        stmt = stmt.where(
+            func.json_unquote(func.json_extract(Company.ext_attrs, "$.establish_date")) >= est_from
+        )
+    if est_to:
+        stmt = stmt.where(
+            func.json_unquote(func.json_extract(Company.ext_attrs, "$.establish_date")) <= est_to
+        )
+    # 注册资金(ext_attrs.registered_capital 数值区间; 脏数据按 0 处理, 不满足区间则被排除)
+    cap_col = cast(
+        func.coalesce(
+            func.regexp_replace(
+                func.json_unquote(func.json_extract(Company.ext_attrs, "$.registered_capital")),
+                "[^0-9.]", "",
+            ),
+            "0",
+        ),
+        Float,
+    )
+    if registered_capital_min is not None:
+        stmt = stmt.where(cap_col >= registered_capital_min)
+    if registered_capital_max is not None:
+        stmt = stmt.where(cap_col <= registered_capital_max)
 
     # 通用多值筛选(filters JSON: {"字段": ["值1","值2"]})
     if filters:
@@ -128,10 +251,8 @@ async def list_companies(
     stmt = stmt.offset((page - 1) * page_size).limit(page_size)
     companies = db.execute(stmt).scalars().all()
 
-    return PaginatedResponse(
-        total=total, page=page, page_size=page_size,
-        items=[CompanyResponse.model_validate(c) for c in companies],
-    )
+    items = _build_company_stats(db, companies)
+    return PaginatedResponse(total=total, page=page, page_size=page_size, items=items)
 
 
 @router.get("/{company_id}", response_model=CompanyResponse)
@@ -340,7 +461,18 @@ async def company_projects(
     db: Session = Depends(get_db),
     user: dict = Depends(get_current_user),
 ):
-    """本公司参与的项目列表（project_company 关联 ∪ 本单位人员参与的 project_member 项目）"""
+    """本公司参与/中标的项目列表。
+
+    证据来源(真实项目参与关系):
+      1. project_company 直接关联(参与项目)
+      2. 本单位人员参与的 project_member 项目(成员项目)
+      3. 中标反推: bid_notice.suppliers 中该单位中标 → clue_id → web_clue.derived_project_id → Project(中标项目)
+    每条记录带 evidence 字段标注来源(参与项目/成员项目/中标项目)。
+    """
+    from app.models.bid_notice import BidNotice
+    from app.models.web_clue import WebClue
+    from app.services.winner_mining import normalize_name
+
     company = db.execute(
         select(Company).where(Company.id == company_id, Company.is_deleted == False)
     ).scalar_one_or_none()
@@ -370,13 +502,32 @@ async def company_projects(
         )
     ).all()
 
-    # 合并去重: project_company 优先, project_member 补充
+    # 来源3: 中标反推项目(该单位在中标公告 supplier 中出现 → 线索 → derived_project_id)
+    norm_key = normalize_name(company.name)
+    bid_project_ids: set = set()
+    if norm_key:
+        for b in db.execute(
+            select(BidNotice).where(BidNotice.is_deleted == False)
+        ).scalars().all():
+            suppliers = (b.meta or {}).get("suppliers") or [] if isinstance(b.meta, dict) else []
+            hit = any(
+                isinstance(s, dict) and normalize_name(s.get("supplier") or "") == norm_key
+                for s in suppliers
+            )
+            if not hit or not b.clue_id:
+                continue
+            clue = db.get(WebClue, b.clue_id)
+            if clue and clue.meta and isinstance(clue.meta, dict) and clue.meta.get("derived_project_id"):
+                bid_project_ids.add(clue.meta["derived_project_id"])
+
+    # 合并去重: project_company 优先, project_member 补充, 中标反推最后(evidence 不同不覆盖)
     merged: dict[int, dict] = {}
     for pc, proj, role in pc_rows:
         merged[proj.id] = {
             "id": proj.id, "code": proj.code, "name": proj.name,
             "status": proj.status, "role": role, "is_active": pc.is_active,
             "joined_at": pc.joined_at, "left_at": pc.left_at,
+            "evidence": "参与项目",
         }
     for proj, role, is_active, joined_at in pm_rows:
         if proj.id in merged:
@@ -385,6 +536,21 @@ async def company_projects(
             "id": proj.id, "code": proj.code, "name": proj.name,
             "status": proj.status, "role": role or "成员单位",
             "is_active": is_active, "joined_at": joined_at, "left_at": None,
+            "evidence": "成员项目",
+        }
+    for pid in bid_project_ids:
+        proj = db.get(Project, pid)
+        if not proj or proj.is_deleted:
+            continue
+        if pid in merged:
+            # 已是参与/成员项目, 补充中标标记(角色不变, 提示证据来源)
+            merged[pid]["evidence"] = "参与+中标"
+            continue
+        merged[pid] = {
+            "id": proj.id, "code": proj.code, "name": proj.name,
+            "status": proj.status, "role": "中标单位", "is_active": True,
+            "joined_at": proj.start_date, "left_at": None,
+            "evidence": "中标项目",
         }
 
     items = list(merged.values())

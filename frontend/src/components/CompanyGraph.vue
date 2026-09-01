@@ -103,12 +103,12 @@
 
 <script setup lang="ts">
 import { ref, onMounted } from "vue";
-import { useRouter } from "vue-router";
-import { OfficeBuilding, User, Plus } from "@element-plus/icons-vue";
+import { OfficeBuilding, User, Plus, FolderOpened } from "@element-plus/icons-vue";
 import api from "@/api";
+import { useNavBase } from "@/utils/navBase";
 
 const props = defineProps<{ companyId: number; companyName?: string }>();
-const router = useRouter();
+const { navToNewTab } = useNavBase();
 
 const loading = ref(true);
 const persons = ref<any[]>([]); // 内部联系人
@@ -199,12 +199,12 @@ async function togglePartner(c: any) {
 
 function goPerson(p: any) {
   const id = Number(String(p.id).replace(/^P/, ""));
-  if (id) router.push(`/workspace/persons/${id}`);
+  if (id) navToNewTab(`/persons/${id}`);
 }
 /** 查看人脉: 入参为人员节点 id(如 'P1'), 不是对象 */
 function viewNetwork(id: any) {
   const pid = Number(String(id).replace(/^P/, ""));
-  if (pid) router.push(`/workspace/network/${pid}`);
+  if (pid) navToNewTab(`/network/${pid}`);
 }
 /** 点击合作项目数: 展开/收起项目列表 */
 function toggleProjects(c: any) {
@@ -213,14 +213,14 @@ function toggleProjects(c: any) {
 /** 点击项目 → 项目详情 */
 function goProject(proj: any) {
   const pid = Number(proj.id);
-  if (pid) router.push(`/workspace/projects/${pid}`);
+  if (pid) navToNewTab(`/projects/${pid}`);
 }
 function goCompany() {
-  router.push(`/workspace/companies/${props.companyId}`);
+  navToNewTab(`/companies/${props.companyId}`);
 }
 function goCompanyById(id: string, name?: string) {
   const raw = Number(String(id).replace(/^C/, ""));
-  if (raw) router.push(`/workspace/companies/${raw}`);
+  if (raw) navToNewTab(`/companies/${raw}`);
 }
 
 onMounted(load);

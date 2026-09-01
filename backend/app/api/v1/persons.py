@@ -9,6 +9,7 @@ from app.models.person import Person
 from app.models.project import Project
 from app.models.project_member import ProjectMember
 from app.models.field_meta import FieldMetadata
+from app.models.industry_data import PersonCert
 from app.middleware.auth import get_current_user, require_permission
 from app.schemas.person import PersonCreate, PersonUpdate, PersonResponse
 from app.schemas.common import PaginatedResponse
@@ -17,6 +18,7 @@ from app.services.cache_service import cache_service
 from app.services.audit_service import track_field_changes, compute_ext_attr_changes
 from app.services.neo4j_sync import sync_person, remove_person, sync_company_colleagues
 from app.services.list_filters import parse_filters, apply_filters
+from app.services.china_regions import province_core
 from app.models.company import Company
 
 router = APIRouter(prefix="/persons", tags=["人员管理"])
@@ -110,6 +112,9 @@ async def list_persons(
     keyword: Optional[str] = None,
     is_active: Optional[bool] = None,
     filters: Optional[str] = None,
+    province: Optional[str] = Query(None, description="按所属单位所在省份筛选"),
+    position: Optional[str] = Query(None, description="职位关键词(模糊匹配, 如 项目经理/总工)"),
+    company_keyword: Optional[str] = Query(None, description="所属单位名称关键词"),
     sort_field: Optional[str] = None,
     sort_order: str = Query("desc", pattern="^(asc|desc)$"),
     db: Session = Depends(get_db),
@@ -117,12 +122,32 @@ async def list_persons(
 ):
     stmt = select(Person).where(Person.is_deleted == False)
 
+    # 数据范围过滤(分发权限): 与 companies/projects 保持一致, 部门/个人范围账号仅见授权范围人员
+    from app.services.data_scope_service import resolve_scope, scope_filter
+    data_scope = resolve_scope(db, user, "person")
+    cond = scope_filter(data_scope, Person, "person", user_id=user.get("user_id"))
+    if cond is not None:
+        stmt = stmt.where(cond)
+
     if status:
         stmt = stmt.where(Person.status == status)
     if is_active is not None:
         stmt = stmt.where(Person.is_active == is_active)
     if keyword:
         stmt = stmt.where(Person.name.contains(keyword))
+
+    # 按所属单位维度筛选(地区 / 单位名): 关联 company 表
+    # 省份用核心词模糊匹配(与 companies 列表口径一致): 库中省名可能带/不带"省/自治区"后缀
+    company_conds = []
+    if province:
+        prov_like = f"%{province_core(province) or province}%"
+        company_conds.append(Company.province.like(prov_like))
+    if company_keyword:
+        company_conds.append(Company.name.contains(company_keyword))
+    if company_conds:
+        stmt = stmt.join(Company, Company.id == Person.company_id).where(*company_conds)
+    if position:
+        stmt = stmt.where(Person.position.contains(position))
 
     # 通用多值筛选(filters JSON: {"字段": ["值1","值2"]})
     if filters:
@@ -157,16 +182,16 @@ async def list_persons(
     items = []
     if persons:
         person_ids = [p.id for p in persons]
-        # 公司名
+        # 公司名 + 单位省市(用于列表展示)
         company_names: dict = {}
         cids = {p.company_id for p in persons if p.company_id}
         if cids:
-            for cid, nm in db.execute(
-                select(Company.id, Company.name).where(
+            for cid, nm, prov, city in db.execute(
+                select(Company.id, Company.name, Company.province, Company.city).where(
                     Company.id.in_(cids), Company.is_deleted == False
                 )
             ):
-                company_names[cid] = nm
+                company_names[cid] = (nm, prov, city)
         # 参与项目: 项目名 + 项目创建时间, 按时间倒序取最新
         proj_by_person: dict = {}
         if person_ids:
@@ -188,11 +213,17 @@ async def list_persons(
                 proj_by_person.setdefault(pid, []).append((pname, pcreated))
         for p in persons:
             item = PersonResponse.model_validate(p)
-            item.company_name = company_names.get(p.company_id) if p.company_id else None
+            _cn = company_names.get(p.company_id, (None, None, None)) if p.company_id else (None, None, None)
+            item.company_name = _cn[0]
+            item.company_province = _cn[1]
+            item.company_city = _cn[2]
             plist = proj_by_person.get(p.id, [])
             if plist:
                 item.latest_project_time = plist[0][1]
-                item.related_projects = "、".join(nm for nm, _ in plist)
+                names = [nm for nm, _ in plist]
+                item.related_projects = (
+                    "、".join(names[:3]) + f" 等 {len(names)} 个" if len(names) > 3 else "、".join(names)
+                )
             items.append(item)
     return PaginatedResponse(
         total=total,
@@ -214,16 +245,27 @@ async def import_real_person_endpoint(
     只取业务有效字段: 姓名/主岗(职位)/手机号码(电话)/所属单位/所属部门。
     幂等: 同名人员复用更新, 不重复创建, 可重复导入。
     """
+    from app.services.import_task import submit_import
     from app.services.real_person_import import import_real_person
+
     file_bytes = await file.read()
-    try:
-        result = import_real_person(db, file_bytes)
-    except Exception as e:  # noqa: BLE001
-        db.rollback()
-        raise HTTPException(status_code=400, detail=f"导入失败: {e}") from e
-    if not result.get("success"):
-        raise HTTPException(status_code=400, detail=result.get("message", "导入失败"))
-    return result
+    if not file_bytes:
+        raise HTTPException(status_code=400, detail="上传文件为空")
+    from app.utils.upload_security import check_upload_file
+    _err = check_upload_file(file_bytes, file.filename or "")
+    if _err:
+        raise HTTPException(status_code=400, detail=_err)
+
+    def _runner(sdb, data, progress):
+        return import_real_person(sdb, data, progress=progress)
+
+    tid = submit_import("persons", file_bytes, user["user_id"], _runner)
+    return {
+        "success": True,
+        "task_id": tid,
+        "entity_type": "persons",
+        "message": "导入已提交, 正在后台执行(Neo4j 图谱同步中)",
+    }
 
 
 @router.get("/{person_id}", response_model=PersonResponse)
@@ -247,6 +289,60 @@ async def get_person(
         ).scalar_one_or_none()
         resp.company_name = cname or None
     return resp
+
+
+@router.get("/{person_id}/certificates")
+async def person_certificates(
+    person_id: int,
+    status: Optional[str] = Query(None, description="active/expiring/expired"),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=100),
+    db: Session = Depends(get_db),
+    user: dict = Depends(get_current_user),
+):
+    """某人证书墙（证书类型/编号/印章号/有效期，含失效预警）。
+
+    对应指导文档: docs/gmi-renovation-guide.md A1-4 / C3
+    """
+    person = db.execute(
+        select(Person).where(Person.id == person_id, Person.is_deleted == False)
+    ).scalar_one_or_none()
+    if not person:
+        raise HTTPException(status_code=404, detail="person not found")
+
+    stmt = select(PersonCert).where(
+        PersonCert.person_id == person_id, PersonCert.is_deleted == False
+    )
+    if status:
+        stmt = stmt.where(PersonCert.status == status)
+    total = db.execute(select(func.count()).select_from(stmt.subquery())).scalar() or 0
+    rows = db.execute(
+        stmt.order_by(PersonCert.valid_to.is_(None), PersonCert.valid_to.asc())
+        .offset((page - 1) * page_size).limit(page_size)
+    ).scalars().all()
+    items = []
+    for pc in rows:
+        d = {
+            "id": pc.id,
+            "cert_type": pc.cert_type,
+            "cert_no": pc.cert_no,
+            "seal_no": pc.seal_no,
+            "major": pc.major,
+            "valid_from": pc.valid_from.isoformat() if pc.valid_from else None,
+            "valid_to": pc.valid_to.isoformat() if pc.valid_to else None,
+            "status": pc.status,
+            "source": pc.source,
+        }
+        items.append(d)
+    return {
+        "success": True,
+        "data": {
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+            "items": items,
+        },
+    }
 
 
 @router.get("/{person_id}/projects")

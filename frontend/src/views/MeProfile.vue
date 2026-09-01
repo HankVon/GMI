@@ -1,59 +1,60 @@
 <template>
   <div class="me-page">
-    <el-card shadow="never" style="max-width: 680px">
+    <el-card shadow="never" style="max-width: 720px">
       <template #header>
         <div class="me-header">
-          <span class="me-title">我的信息</span>
-          <el-tag v-if="saved" type="success" size="small" effect="light">
-            <el-icon style="vertical-align: -2px; margin-right: 4px"><CircleCheck /></el-icon>已保存并关联为人脉源节点
-          </el-tag>
-          <el-tag v-else type="danger" size="small" effect="light">
-            <el-icon style="vertical-align: -2px; margin-right: 4px"><CircleClose /></el-icon>未录入
-          </el-tag>
+          <span class="me-title">账号设置</span>
+          <el-tag v-for="r in me.roles" :key="r" size="small" style="margin:0 4px">{{ r }}</el-tag>
         </div>
       </template>
 
-      <el-alert
-        type="info" show-icon :closable="false" style="margin-bottom: 16px"
-        title="这里的「我」是人脉查询的源节点。录入后，点击任意人员的「查看人脉」即可从你出发，展示经过哪些项目/单位/合作找到对方。"
-      />
+      <!-- 基本信息 -->
+      <el-descriptions :column="2" border size="small" style="margin-bottom:24px">
+        <el-descriptions-item label="用户名">{{ me.username }}</el-descriptions-item>
+        <el-descriptions-item label="显示名">{{ me.display_name }}</el-descriptions-item>
+        <el-descriptions-item label="角色">
+          <el-tag v-for="r in me.roles" :key="r" size="small" style="margin:2px">{{ r }}</el-tag>
+        </el-descriptions-item>
+        <el-descriptions-item label="权限数">{{ me.permissions?.length ?? 0 }}</el-descriptions-item>
+        <el-descriptions-item label="人脉节点">
+          <el-tag v-if="me.person_id" type="success" size="small" effect="light">已关联</el-tag>
+          <el-tag v-else type="info" size="small" effect="light">未关联</el-tag>
+        </el-descriptions-item>
+      </el-descriptions>
 
-      <el-form ref="formRef" :model="form" label-width="90px" :rules="rules">
-        <el-form-item label="姓名" prop="name">
-          <el-input v-model="form.name" placeholder="请输入你的姓名" />
-        </el-form-item>
-        <el-form-item label="职位" prop="position">
-          <el-input v-model="form.position" placeholder="如：项目经理 / 高级地质工程师" />
-        </el-form-item>
-        <el-form-item label="所属单位">
-          <el-select
-            v-model="form.company_id"
-            filterable remote clearable
-            placeholder="输入单位名搜索(如: 第五地质大队)"
-            style="width: 100%"
-            :remote-method="loadCompanies"
-            :loading="companyLoading"
-          >
-            <el-option v-for="c in companyOptions" :key="c.id" :label="c.name" :value="c.id" />
-          </el-select>
+      <!-- 资料编辑 -->
+      <h3 class="me-section-title">个人资料</h3>
+      <el-form :model="profileForm" label-width="90px">
+        <el-form-item label="显示名">
+          <el-input v-model="profileForm.display_name" maxlength="32" placeholder="你的姓名/昵称" />
         </el-form-item>
         <el-form-item label="邮箱">
-          <el-input v-model="form.email" placeholder="选填" />
+          <el-input v-model="profileForm.email" maxlength="64" placeholder="选填" />
         </el-form-item>
-        <el-form-item label="电话">
-          <el-input v-model="form.phone" placeholder="选填" />
+        <el-form-item label="手机号">
+          <el-input v-model="profileForm.phone" maxlength="32" placeholder="选填" />
         </el-form-item>
-        <el-form-item label="状态">
-          <el-select v-model="form.status" style="width: 100%">
-            <el-option label="在职" value="active" />
-            <el-option label="离职" value="inactive" />
-          </el-select>
+        <el-form-item>
+          <el-button type="primary" :loading="savingProfile" @click="saveProfile">保存资料</el-button>
         </el-form-item>
       </el-form>
 
-      <div class="me-actions">
-        <el-button type="primary" :loading="saving" @click="save">保存</el-button>
-      </div>
+      <!-- 修改密码 -->
+      <h3 class="me-section-title">修改密码</h3>
+      <el-form :model="pwdForm" label-width="90px">
+        <el-form-item label="原密码" required>
+          <el-input v-model="pwdForm.old_password" type="password" show-password placeholder="请输入原密码" />
+        </el-form-item>
+        <el-form-item label="新密码" required>
+          <el-input v-model="pwdForm.new_password" type="password" show-password placeholder="8-64位，须含字母和数字" />
+        </el-form-item>
+        <el-form-item label="确认新密码" required>
+          <el-input v-model="pwdForm.confirm" type="password" show-password placeholder="再次输入新密码" />
+        </el-form-item>
+        <el-form-item>
+          <el-button type="primary" :loading="savingPwd" @click="savePassword">修改密码</el-button>
+        </el-form-item>
+      </el-form>
     </el-card>
   </div>
 </template>
@@ -61,78 +62,84 @@
 <script setup lang="ts">
 import { ref, onMounted } from "vue";
 import { ElMessage } from "element-plus";
-import { CircleCheck, CircleClose } from "@element-plus/icons-vue";
 import api from "@/api";
 
-const form = ref<any>({
-  name: "", position: "", company_id: null, email: "", phone: "", status: "active",
-});
-const companyOptions = ref<any[]>([]);
-const companyLoading = ref(false);
-const saving = ref(false);
-const saved = ref(false);
-const formRef = ref<any>(null);
-const rules = {
-  name: [{ required: true, message: "姓名为必填项", trigger: "blur" }],
-  position: [{ required: false }],
-};
+const me = ref<any>({ username: "", display_name: "", roles: [], permissions: [], person_id: null });
+const profileForm = ref({ display_name: "", email: "", phone: "" });
+const pwdForm = ref({ old_password: "", new_password: "", confirm: "" });
+const savingProfile = ref(false);
+const savingPwd = ref(false);
 
 async function loadMe() {
   try {
-    const res: any = await api.get("/network/me");
-    saved.value = !!res.linked;
-    if (res.linked) {
-      form.value = {
-        name: res.name || "",
-        position: res.position || "",
-        company_id: res.company_id ?? null,
-        email: res.email || "",
-        phone: res.phone || "",
-        status: res.status || "active",
-      };
+    const res: any = await api.get("/auth/me");
+    me.value = res;
+    profileForm.value = {
+      display_name: res.display_name || "",
+      email: res.email || "",
+      phone: res.phone || "",
+    };
+  } catch { /* 拦截器提示 */ }
+}
+
+async function saveProfile() {
+  savingProfile.value = true;
+  try {
+    await api.put("/me/profile", {
+      display_name: profileForm.value.display_name,
+      email: profileForm.value.email,
+      phone: profileForm.value.phone,
+    });
+    ElMessage.success("资料已保存");
+    // ★ P0-1: 账号尚未关联人员节点时, 保存资料后自动调 POST /network/me 创建并绑定「我」节点(一次完成录入+绑定)
+    if (!me.value.person_id) {
+      try {
+        const r: any = await api.post("/network/me", {
+          name: (profileForm.value.display_name || "").trim() || me.value.username,
+          email: profileForm.value.email,
+          phone: profileForm.value.phone,
+        });
+        if (r && r.person_id) me.value.person_id = r.person_id;
+      } catch {
+        ElMessage.warning("资料已保存, 但关联人脉节点失败, 可稍后在「我的信息」重试");
+      }
     }
-  } catch (e: any) {
-    // 拦截器已 ElMessage 提示过, 这里只把状态置为未录入, 不再额外弹窗
-    saved.value = false;
-  }
-}
-
-async function loadCompanies(q: string) {
-  companyLoading.value = true;
-  try {
-    const res: any = await api.get("/companies", {
-      params: { page_size: 50, keyword: q || undefined },
-    });
-    companyOptions.value = res.items || [];
-  } catch { companyOptions.value = []; }
-  finally { companyLoading.value = false; }
-}
-
-async function save() {
-  try { await formRef.value.validate(); } catch { return; }
-  saving.value = true;
-  try {
-    await api.post("/network/me", {
-      name: form.value.name,
-      position: form.value.position,
-      company_id: form.value.company_id || null,
-      email: form.value.email,
-      phone: form.value.phone,
-      status: form.value.status,
-    });
-    ElMessage.success("已保存");
-    saved.value = true;
     loadMe();
-  } catch { /* 拦截器处理 */ }
-  finally { saving.value = false; }
+  } catch { /* 拦截器提示 */ }
+  finally { savingProfile.value = false; }
 }
 
-onMounted(() => { loadMe(); loadCompanies(); });
+async function savePassword() {
+  if (!pwdForm.value.old_password) return ElMessage.warning("请输入原密码");
+  if (pwdForm.value.new_password.length < 8) return ElMessage.warning("新密码至少 8 位");
+  if (pwdForm.value.new_password !== pwdForm.value.confirm) return ElMessage.warning("两次输入的新密码不一致");
+  savingPwd.value = true;
+  try {
+    await api.put("/me/password", {
+      old_password: pwdForm.value.old_password,
+      new_password: pwdForm.value.new_password,
+    });
+    ElMessage.success("密码修改成功，下次登录请使用新密码");
+    pwdForm.value = { old_password: "", new_password: "", confirm: "" };
+  } catch (e: any) {
+    const detail = e?.response?.data?.detail || "修改失败";
+    ElMessage.error(typeof detail === "string" ? detail : "修改失败");
+  } finally { savingPwd.value = false; }
+}
+
+onMounted(loadMe);
 </script>
 
 <style scoped>
 .me-page { max-width: 760px; }
 .me-header { display: flex; align-items: center; gap: 12px; }
 .me-title { font-weight: 600; font-size: 16px; }
-.me-actions { display: flex; justify-content: flex-end; padding-top: 8px; }
+.me-section-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #1f2d3d;
+  border-left: 3px solid var(--ssm-primary, #a51c30);
+  padding-left: 10px;
+  margin: 22px 0 16px;
+}
 </style>

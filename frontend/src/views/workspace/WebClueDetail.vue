@@ -214,6 +214,13 @@
         </el-col>
       </el-row>
 
+      <!-- 标讯人脉匹配(P1-5 阶段一): 复用后端 /biz-network/tenders/* -->
+      <el-row v-if="clue && clue.id" :gutter="16" style="margin-top: 16px">
+        <el-col :span="24">
+          <TenderMatchPanel :clue-id="Number(clue.id)" />
+        </el-col>
+      </el-row>
+
       <!-- 相关附件 -->
       <el-row v-if="clue && attachments.length" :gutter="16" style="margin-top: 16px">
         <el-col :span="24">
@@ -259,6 +266,7 @@ import { ref, computed, onMounted } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { DataAnalysis, Document, Timer, Calendar, Wallet, TopRight, Memo, Files, Paperclip, MagicStick, Connection, OfficeBuilding, User, FolderOpened, Right } from "@element-plus/icons-vue";
 import api from "@/api";
+import TenderMatchPanel from "@/components/TenderMatchPanel.vue";
 
 const route = useRoute();
 const router = useRouter();

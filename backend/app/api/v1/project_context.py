@@ -144,6 +144,7 @@ async def project_intelligence(
     page_size: int = Query(20, ge=1, le=100),
     db: Session = Depends(get_db),
     user: dict = Depends(get_current_user),
+    level: int = Query(0, ge=0, le=2, description="匹配等级(0同区县/1同市/2同类兜底)"),
 ):
     """项目相关行业情报 — 聚合意向/招标/中标三源, 每条含实际发布时间+抓取时间。"""
     project = db.execute(
@@ -159,6 +160,8 @@ async def project_intelligence(
         from datetime import timedelta
         cutoff = cutoff - timedelta(days=days)
     items: list[dict] = []
+    # 项目自身来源公告 URL: 该公告已导入为项目本体, 不应再作为「行业情报」重复出现。
+    project_source = ((project.ext_attrs or {}).get("source") or "").strip()
     prov_ctx = ctx["province"] or ""
     city_ctx = ctx["city"] or ""
     county_ctx = ctx["county"] or ""
@@ -180,9 +183,11 @@ async def project_intelligence(
             tpool = f"{it.title or ''} {it.region or ''}"
             r_score, r_strong = _zh_region_overlap(prov_ctx, city_ctx, county_ctx, it.province or "", it.city or "", it.county or "", tpool)
             k_score, k_strong, cat_hit = _keyword_overlap(ctx["name_kw"], tpool, ctx["category"])
-            # 同区县(无区县则同市) + 同类别 才关联
-            if not _is_industry_related(county_ctx, city_ctx, tpool, cat_hit):
-                continue  # 不同区县/市 或 非同类别 → 不关联
+            # 同区县(无区县则同市) + 同类别 才关联(level 越高越宽松兜底)
+            if not _is_industry_related(county_ctx, city_ctx, tpool, cat_hit, level=level):
+                continue  # 不满足当前等级匹配 → 跳过
+            if (it.url or "").strip() and (it.url or "").strip() == project_source:
+                continue  # 排除项目自身来源公告, 避免「行业情报=项目本身」
             items.append(_mk_item("investment", "投资意向期", it.id, it.title or "", it.url or "",
                                   it.province or "", it.city or "", it.county or "",
                                   it.published_at, it.published_at, it.dept or "政务源",
@@ -205,8 +210,10 @@ async def project_intelligence(
                 continue
             r_score, r_strong = _zh_region_overlap(prov_ctx, city_ctx, county_ctx, tgt, "", "", tpool)
             k_score, k_strong, cat_hit = _keyword_overlap(ctx["name_kw"], tpool, ctx["category"])
-            if not _is_industry_related(county_ctx, city_ctx, tpool, cat_hit):
-                continue  # 不同区县/市 或 非同类别 → 不关联
+            if not _is_industry_related(county_ctx, city_ctx, tpool, cat_hit, level=level):
+                continue  # 不满足当前等级匹配 → 跳过
+            if (c.url or "").strip() and (c.url or "").strip() == project_source:
+                continue  # 排除项目自身来源公告
             items.append(_mk_item("bidding", "招标期", c.id, c.title or "", c.url or "",
                                   tgt, "", "",
                                   c.published_at, c.fetched_at, c.source_name or "网页线索",
@@ -228,8 +235,10 @@ async def project_intelligence(
                 continue
             r_score, r_strong = _zh_region_overlap(prov_ctx, city_ctx, county_ctx, tgt, "", "", tpool)
             k_score, k_strong, cat_hit = _keyword_overlap(ctx["name_kw"], tpool, ctx["category"])
-            if not _is_industry_related(county_ctx, city_ctx, tpool, cat_hit):
-                continue  # 不同区县/市 或 非同类别 → 不关联
+            if not _is_industry_related(county_ctx, city_ctx, tpool, cat_hit, level=level):
+                continue  # 不满足当前等级匹配 → 跳过
+            if (bn.url or "").strip() and (bn.url or "").strip() == project_source:
+                continue  # 排除项目自身来源公告
             suppliers = ", ".join([s.get("supplier", "") for s in (bn.meta or {}).get("suppliers", []) if s.get("supplier")])
             items.append(_mk_item("awarded", "中标公示期", bn.id, bn.title or "", bn.url or "",
                                   tgt, "", "",
@@ -258,8 +267,10 @@ async def project_intelligence(
                 continue
             r_score, r_strong = _zh_region_overlap(prov_ctx, city_ctx, county_ctx, tgt, "", "", tpool)
             k_score, k_strong, cat_hit = _keyword_overlap(ctx["name_kw"], tpool, ctx["category"])
-            if not _is_industry_related(county_ctx, city_ctx, tpool, cat_hit):
+            if not _is_industry_related(county_ctx, city_ctx, tpool, cat_hit, level=level):
                 continue
+            if (c.url or "").strip() and (c.url or "").strip() == project_source:
+                continue  # 排除项目自身来源公告
             items.append(_mk_item("awarded", "中标公示期", c.id, c.title or "", c.url or "",
                                   tgt, "", "",
                                   c.published_at, c.fetched_at, c.source_name or "网页线索",
@@ -267,13 +278,19 @@ async def project_intelligence(
                                   score=r_score + k_score))
 
     # 排序: 相关度优先, 再按实际发布时间倒序
-    items.sort(key=lambda x: (-x.get("score", 0), x["published_at"] or ""), reverse=False)
     items.sort(key=lambda x: x["published_at"] or "", reverse=True)
     total = len(items)
     paged = items[(page - 1) * page_size: page * page_size]
+    # 分级兜底: 当前等级无匹配时, 放宽到下一等级重试(同区县→同市→同类别),
+    # 保证行业情报在数据不足时也有相关内容可看。
+    if not paged and not items and level < 2 and (county_ctx or city_ctx):
+        return await project_intelligence(
+            project_id, stage, days, page, page_size, db, user, level=level + 1
+        )
     return {
         "success": True, "total": total, "items": paged,
-        "project": {"id": project.id, "name": project.name, "ctx": ctx},
+        "project": {"id": project.id, "name": project.name, "ctx": ctx,
+                    "match_level": level, "fallback": level > 0},
     }
 
 
@@ -291,17 +308,27 @@ def _mk_item(stage, stage_label, id_, title, url, province, city, county,
     }
 
 
-def _is_industry_related(county_ctx: str, city_ctx: str, tpool: str, cat_hit: bool) -> bool:
-    """行业情报关联判定(2026-08 收缩: 同区县 + 同类别)。
+def _is_industry_related(county_ctx: str, city_ctx: str, tpool: str, cat_hit: bool,
+                         level: int = 0) -> bool:
+    """行业情报关联判定 — 分级匹配(同区县+同类别 → 同市+同类别 → 同类别兜底)。
 
-    仅当情报文本同时满足:
-      1. 命中项目「同类别词」(cat_hit=True);
-      2. 位于「同一区县」(项目有 county 则文本须含 county 名;
-         项目无 county 仅有 city 时退化为同市, 文本须含 city 名)。
-    省级(无市/县)或跨区县/市的公告一律不关联。
+    返回情报文本是否命中项目。level 表示兜底等级(0 最严, 2 最宽):
+      level=0: 同区县 + 同类别 (无 county 时退化为同市)
+      level=1: 同市 + 同类别   (跨区县但同市也算)
+      level=2: 仅同类别        (任意地域, 数据量不足时的最后兜底)
+    前提均为 cat_hit=True(命中项目类别词)。非同类别一律不关联;
+    跨省/全国匹配仅在 level=2 兜底时启用, 避免误伤。
     """
     if not cat_hit:
         return False
+    if level >= 2:
+        return True  # 兜底: 只要类别命中即关联
+    if level >= 1:
+        if city_ctx:
+            return city_ctx in tpool
+        # 无 city 信息时退回同 county / 无地域判定
+        return county_ctx in tpool if county_ctx else False
+    # level=0 严格: 同区县(无则同市)
     if county_ctx:
         return county_ctx in tpool
     if city_ctx:
@@ -415,28 +442,27 @@ def _extract_key_tokens(name: str) -> list:
     return segs[:3]
 
 
-def _similar_score(a: dict, b: dict) -> tuple:
+def _similar_score(a: dict, b: dict, level: int = 0) -> tuple:
     """两个项目上下文的相似度(评分 + 强相关标记)。
 
     相似项目判定核心 = 业务本质相同(类别一致) + 同地域(市/区县)。
-    触达网络只推荐 同类别 + 同市/同区县 的项目(范围收敛, 不跨市), 否则范围太广。
-    例: 成都市双流区的地灾项目只相似于成都本地的地灾项目, 不会相似于绵阳/攀枝花的。
+    触达网络默认(level=0)只推荐 同类别 + 同市/同区县 的项目(范围收敛, 不跨市);
+    level=1 为兜底: 放宽到 仅同类别(跨市, 全省/全国同类项目), 避免本地同类项目不足时网络为空。
 
     规则:
       - 类别相同: +3(必备)
-      - 同区县: 强相关必备 +3(精确)
-      - 同市(不同区县): +2(同城兜底, 区县数据缺失时)
-      - 省相同但市不同: 不算分(太宽泛)
+      - 同区县: +3(精确)
+      - 同市(不同区县): +2(同城兜底)
+      - level=1 且仅类别相同(跨市): +1(放宽兜底, 提供触达信息)
       - 项目名核心词命中: +1
-    返回 (score, strong): strong = 类别相同 且(同区县 或 同市)。
+    返回 (score, strong):
+      - level=0: strong = 类别相同 且(同区县 或 同市)
+      - level=1: strong = 类别相同(任意地域)
     """
-    import re as _re
     score = 0
     strong = False
-    # 类别是相似的核心
     if a["category"] and a["category"] == b["category"]:
         score += 3
-        # 同地域是强相关必备: 同区县(精确) 或 同市(兜底)
         same_county = a["county"] and a["county"] == b["county"]
         same_city = a["city"] and a["city"] == b["city"]
         if same_county:
@@ -445,7 +471,10 @@ def _similar_score(a: dict, b: dict) -> tuple:
         elif same_city:
             score += 2
             strong = True
-        # 市/县均无法比对(数据缺失)时: 不判定相似, 防范围过广
+        elif level >= 1:
+            # 兜底: 仅类别相同(跨市)也算相似, 保证同类项目不足时网络不空
+            score += 1
+            strong = True
     # 名称核心词
     if a["name_kw"] and b.get("name_kw") and a["name_kw"] == b["name_kw"] and a["name_kw"] not in ("", "项目"):
         score += 1
@@ -477,17 +506,24 @@ async def project_related_network(
     ctx = _project_ctx(project)
 
     # 1) 相似项目: 要求「类别相同」(强相关, 业务本质一致)的其他项目。
-    #    同省不算相似(太宽泛), 同市/同县辅助加分。
+    #    默认 level=0 要求 同类别+同市/同区县; 若本地同类项目不足(数据稀疏)导致网络为空,
+    #    自动放宽到 level=1「仅同类别」(跨市兜底), 保证项目人脉有内容可触达。
     #    例: 地质勘察项目只和地质勘察项目相似, 不会和生态修复/路灯治理项目相似。
     all_projs = db.execute(
         select(Project).where(Project.is_deleted == False, Project.id != project_id)
     ).scalars().all()
     similar = []
-    for p in all_projs:
-        pc = _project_ctx(p)
-        score, strong = _similar_score(ctx, pc)
-        if strong:  # 必须类别相同
-            similar.append((p, score))
+    net_level = 0
+    for level in (0, 1):
+        similar = []
+        for p in all_projs:
+            pc = _project_ctx(p)
+            score, strong = _similar_score(ctx, pc, level=level)
+            if strong:
+                similar.append((p, score))
+        if similar:
+            net_level = level
+            break
     # 按相似度(同类别优先)+ 更新时间排序
     similar.sort(key=lambda x: (-x[1], x[0].updated_at or datetime.min))
     similar = [p for p, _s in similar[:10]]
@@ -594,4 +630,6 @@ async def project_related_network(
         "related_projects": rel_projects,
         "related_companies": rel_companies,
         "key_persons": rel_persons,
+        "match_level": net_level,  # 0=严格(同类别+同市), 1=兜底(仅同类别跨市)
+        "fallback": net_level > 0,
     }

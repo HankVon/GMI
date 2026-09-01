@@ -1,0 +1,590 @@
+/* ============================================================
+   GMI 地质产业情报平台 · 对外官网主题
+   视觉基准：女娲人工智能学院 (sch.nuwax.com) 编辑式学院风
+   ─ 品牌红 #c8102e + 近黑文字 #141414
+   ─ 展示标题用衬线体(Fraunces 风格)，正文用无衬线(Archivo 风格)
+   ─ 大量留白 + 柔和红色投影 + 宽字距小标签 + 细边框卡片
+   适配地质行业：Logo「地」字、标语「地质与产业情报数据中台」
+   ============================================================ */
+
+:root {
+  /* ── 品牌色（女娲红 → 地质红） ── */
+  --site-brand: #c8102e;
+  --site-brand-dark: #a40d26;
+  --site-brand-soft: #fceef0;
+  --site-brand-bright: #e01a3c;
+
+  /* ── 文字色（近黑 + 灰阶） ── */
+  --site-text: #141414;
+  --site-text-dim: #525252;
+  --site-text-mute: #9ca3af;
+
+  /* ── 背景与面板 ── */
+  --site-bg: #fafafa;
+  --site-bg-2: #f5f5f5;
+  --site-panel: #ffffff;
+  --site-panel-border: #e5e7eb;
+  --site-hairline: #ececec;
+
+  /* ── 辅助色（地质行业蓝/绿/金） ── */
+  --site-cyan: #3a5dbe;      /* 地质蓝，替代原绿色强调 */
+  --site-blue: #2563eb;
+  --site-violet: #7e22ce;
+  --site-gold: #b08d57;      /* 暗金标签 */
+
+  /* ── 渐变与阴影（柔和红投影，对标参考站 hover） ── */
+  --site-grad: linear-gradient(120deg, #c8102e 0%, #e01a3c 100%);
+  --site-grad-soft: linear-gradient(120deg, rgba(200, 16, 46, 0.08), rgba(224, 26, 60, 0.05));
+  --site-shadow: 0 1px 3px rgba(20, 20, 20, 0.04);
+  --site-shadow-hover: 0 24px 50px -22px rgba(200, 16, 46, 0.45);
+  --site-shadow-float: 0 16px 40px -20px rgba(20, 20, 20, 0.18);
+
+  /* ── 字体（Fraunces 风格展示 + Archivo 风格正文，对标女娲学院） ── */
+  --site-font-display: "Fraunces", "STZhongsong", "Songti SC", "STSong", "SimSun", Georgia, "Times New Roman", serif;
+  --site-font-body: "Archivo", "PingFang SC", "HarmonyOS Sans SC", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
+  --site-font-mono: "JetBrains Mono", "Consolas", "Monaco", "Courier New", monospace;
+
+  /* ── 字号阶梯（桌面基准, 移动端在媒体查询中收缩） ── */
+  --fs-display: clamp(40px, 6vw, 64px);   /* 首屏大标题 */
+  --fs-h1: clamp(32px, 4.6vw, 44px);      /* 页面主标题 */
+  --fs-h2: clamp(26px, 3.4vw, 34px);      /* 区块标题 */
+  --fs-h3: clamp(20px, 2.4vw, 24px);      /* 卡片/小节标题 */
+  --fs-h4: clamp(16px, 1.8vw, 18px);      /* 小组件/子标题 */
+  --fs-lead: 16.5px;                       /* 引导段落 */
+  --fs-body: 15px;                         /* 正文 */
+  --fs-sm: 13.5px;                         /* 次要文字 */
+  --fs-xs: 12.5px;                         /* 辅助/元信息 */
+  --fs-caption: 11.5px;                    /* 脚注/标签 */
+  --fs-btn: 14.5px;                        /* 按钮 */
+
+  /* ── 字重阶梯 ── */
+  --fw-regular: 400;
+  --fw-medium: 500;
+  --fw-semibold: 600;
+  --fw-bold: 700;
+  --fw-display: 600;   /* 大标题用中粗, 保持学院轻盈感 */
+
+  /* ── 行高体系 ── */
+  --lh-display: 1.12;
+  --lh-heading: 1.28;
+  --lh-body: 1.7;
+  --lh-sm: 1.6;
+
+  /* ── 圆角与间距 ── */
+  --site-radius: 8px;
+  --site-radius-lg: 16px;
+  --site-eyebrow: var(--site-brand);
+
+  /* Element Plus 字体变量统一到 Archivo 体系 */
+  --el-font-family: var(--site-font-body);
+  --el-font-size-base: 14px;
+  --el-font-weight-primary: 500;
+}
+
+/* 全站默认字体（覆盖 Element 及未挂 site-page 的页面） */
+body {
+  font-family: var(--site-font-body);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+.el-button,
+.el-input__inner,
+.el-tabs__item,
+.el-menu-item,
+.el-form-item__label,
+.el-table,
+.el-dropdown-menu__item,
+.el-pagination,
+.el-page-header,
+.el-breadcrumb {
+  font-family: var(--site-font-body);
+}
+
+/* 官网通用容器 */
+.site-page {
+  background: var(--site-bg);
+  color: var(--site-text);
+  min-height: 100vh;
+  font-family: var(--site-font-body);
+  font-size: var(--fs-body);
+  font-weight: var(--fw-regular);
+  line-height: var(--lh-body);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+/* ════════════════════════════════════════════════
+   女娲学院式排版层级系统
+   展示标题(Fraunces) · 正文(Archivo) · 差异化字号/字重/行高
+   ════════════════════════════════════════════════ */
+
+/* ── 标题层级: 衬线展示体 + 中粗 + 紧行高 ── */
+.site-page h1,
+.site-page h2,
+.site-page h3,
+.site-page h4,
+.site-page h5 {
+  font-family: var(--site-font-display);
+  font-weight: var(--fw-display);
+  color: var(--site-text);
+  letter-spacing: 0.005em;
+  line-height: var(--lh-heading);
+  margin: 0 0 0.6em;
+}
+.site-page h1 { font-size: var(--fs-h1); }
+.site-page h2 { font-size: var(--fs-h2); }
+.site-page h3 { font-size: var(--fs-h3); }
+.site-page h4 { font-size: var(--fs-h4); font-weight: var(--fw-semibold); }
+.site-page h5 { font-size: var(--fs-body); font-weight: var(--fw-semibold); }
+
+/* ── 页面主标题 (About/Contact/Solutions 等通用) ── */
+.site-page .page-title,
+.site-page .site-h1 {
+  font-family: var(--site-font-display);
+  font-size: var(--fs-h1);
+  font-weight: var(--fw-display);
+  line-height: var(--lh-display);
+  letter-spacing: 0.01em;
+  margin: 12px 0 10px;
+}
+.site-page .page-sub {
+  font-size: var(--fs-lead);
+  font-weight: var(--fw-regular);
+  color: var(--site-text-dim);
+  line-height: var(--lh-body);
+  max-width: 620px;
+}
+
+/* ── 区块标题与描述 ── */
+.site-h2 {
+  font-family: var(--site-font-display);
+  font-size: var(--fs-h2);
+  font-weight: var(--fw-display);
+  letter-spacing: 0.01em;
+  line-height: var(--lh-heading);
+  color: var(--site-text);
+  margin: 0 0 14px;
+}
+.site-h3 {
+  font-family: var(--site-font-display);
+  font-size: var(--fs-h3);
+  font-weight: var(--fw-semibold);
+  color: var(--site-text);
+  line-height: var(--lh-heading);
+  margin: 0 0 10px;
+}
+.site-h4 {
+  font-family: var(--site-font-display);
+  font-size: var(--fs-h4);
+  font-weight: var(--fw-semibold);
+  color: var(--site-text);
+  letter-spacing: 0.02em;
+}
+.site-sub {
+  font-size: var(--fs-lead);
+  line-height: var(--lh-body);
+  font-weight: var(--fw-regular);
+  color: var(--site-text-dim);
+  max-width: 640px;
+}
+
+/* ── 引导段落: 略大、略灰、更宽松 ── */
+.site-lead {
+  font-size: var(--fs-lead);
+  line-height: var(--lh-body);
+  color: var(--site-text-dim);
+}
+
+/* ── 正文/次要/辅助文字层级 ── */
+.site-text-lg { font-size: var(--fs-lead); line-height: var(--lh-body); }
+.site-text { font-size: var(--fs-body); line-height: var(--lh-body); }
+.site-text-sm { font-size: var(--fs-sm); line-height: var(--lh-sm); color: var(--site-text-dim); }
+.site-text-xs { font-size: var(--fs-xs); line-height: var(--lh-sm); color: var(--site-text-mute); }
+.site-caption {
+  font-size: var(--fs-caption);
+  line-height: var(--lh-sm);
+  letter-spacing: 0.06em;
+  color: var(--site-text-mute);
+}
+
+/* ── 数字与统计: 衬线展示体 + 粗 ── */
+.site-page .stat-num,
+.site-page .cm-stat-num,
+.site-page .ts-num,
+.site-page .av-v,
+.site-page .rl-num,
+.site-page .rcmd-num,
+.site-page .flow-dot,
+.site-page .sol-no,
+.site-page .cert-mark,
+.site-page .logo-mark {
+  font-family: var(--site-font-display);
+}
+.site-page b,
+.site-page strong {
+  font-family: var(--site-font-body);
+  font-weight: var(--fw-semibold);
+  color: var(--site-text);
+}
+/* 数字与统计口径统一衬线, 增强学院气质 */
+.site-page .metric-value,
+.site-page .kpi-value {
+  font-family: var(--site-font-display);
+  font-weight: var(--fw-semibold);
+  letter-spacing: 0.01em;
+}
+
+/* ── 行内链接: 强调色 + 下划线动效 ── */
+.site-link {
+  color: var(--site-brand);
+  font-weight: var(--fw-medium);
+  text-decoration: none;
+  border-bottom: 1px solid transparent;
+  transition: color 0.2s ease, border-color 0.2s ease;
+}
+.site-link:hover {
+  color: var(--site-brand-dark);
+  border-bottom-color: var(--site-brand-dark);
+}
+
+.site-container {
+  width: 100%;
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 0 24px;
+}
+.site-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 13px 28px;
+  border-radius: 999px;
+  font-size: var(--fs-btn);
+  font-weight: var(--fw-semibold);
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  border: none;
+  transition: all 0.25s ease;
+  text-decoration: none;
+  line-height: 1.4;
+}
+.site-btn-primary {
+  background: var(--site-brand);
+  color: #fff;
+  box-shadow: 0 10px 22px -12px rgba(200, 16, 46, 0.6);
+}
+.site-btn-primary:hover {
+  transform: translateY(-2px);
+  background: var(--site-brand-dark);
+  box-shadow: 0 18px 34px -16px rgba(200, 16, 46, 0.7);
+}
+.site-btn-ghost {
+  background: transparent;
+  color: var(--site-text);
+  border: 1px solid var(--site-panel-border);
+  font-weight: var(--fw-medium);
+}
+.site-btn-ghost:hover {
+  border-color: var(--site-brand);
+  color: var(--site-brand);
+  background: var(--site-brand-soft);
+}
+
+/* 区块标签: 宽字距小标签 + 衬线大标题 */
+.site-eyebrow {
+  display: inline-block;
+  font-size: 12px;
+  font-weight: var(--fw-bold);
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+  color: var(--site-eyebrow);
+  margin-bottom: 14px;
+  font-family: var(--site-font-body);
+}
+.site-eyebrow::before {
+  content: "";
+  display: inline-block;
+  width: 24px;
+  height: 2px;
+  background: var(--site-brand);
+  vertical-align: middle;
+  margin-right: 10px;
+}
+
+/* 通用面板卡片（白底 + 细边框 + 柔和红投影） */
+.site-card {
+  background: var(--site-panel);
+  border: 1px solid var(--site-panel-border);
+  border-radius: var(--site-radius-lg);
+  padding: 26px;
+  box-shadow: var(--site-shadow);
+  transition: transform 0.35s ease, border-color 0.35s ease, box-shadow 0.35s ease;
+}
+.site-card:hover {
+  transform: translateY(-4px);
+  border-color: rgba(200, 16, 46, 0.35);
+  box-shadow: var(--site-shadow-hover);
+}
+
+/* 滚动进入动画 */
+.reveal {
+  opacity: 0;
+  transform: translateY(24px);
+  transition: opacity 0.7s ease, transform 0.7s ease;
+}
+.reveal.in {
+  opacity: 1;
+  transform: none;
+}
+
+/* 红系渐变文字 */
+.grad-text {
+  background: var(--site-grad);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+/* ── 移动端字号收缩: 保留层级但整体缩放 ── */
+@media (max-width: 768px) {
+  .site-container {
+    padding: 0 18px;
+  }
+  .site-page .page-title,
+  .site-page .site-h1 {
+    font-size: clamp(26px, 8vw, 32px);
+  }
+  .site-h2 {
+    font-size: clamp(22px, 6.5vw, 26px);
+  }
+  .site-page h1 { font-size: clamp(24px, 7vw, 30px); }
+  .site-page h2 { font-size: clamp(22px, 6.5vw, 26px); }
+  .site-page h3 { font-size: clamp(18px, 5vw, 20px); }
+  .site-page h4 { font-size: 16px; }
+  .site-page .site-lead,
+  .site-page .page-sub,
+  .site-sub {
+    font-size: 14.5px;
+  }
+  .site-page .site-text { font-size: 14px; }
+  .site-page .site-text-sm { font-size: 13px; }
+  .site-btn {
+    padding: 11px 22px;
+    font-size: 14px;
+  }
+}
+
+@media (max-width: 480px) {
+  .site-page .page-title,
+  .site-page .site-h1 {
+    font-size: 24px;
+  }
+  .site-h2 {
+    font-size: 21px;
+  }
+}
+
+/* ============================================================
+   前台数据中心(portal)主题适配
+   复用后台组件以 Element 蓝为主，在 portal 容器内统一覆盖为前台地质红
+   ============================================================ */
+.portal-page {
+  /* Element Plus 主色 → 地质红 */
+  --el-color-primary: #c8102e;
+  --el-color-primary-light-3: #e04a60;
+  --el-color-primary-light-5: #ee8d9b;
+  --el-color-primary-light-7: #f7c3cb;
+  --el-color-primary-light-8: #fae1e4;
+  --el-color-primary-light-9: #fceef0;
+  --el-color-primary-dark-2: #a40d26;
+}
+
+/* 复用后台组件的根元素在 portal 中水平居中 */
+.portal-page > * {
+  width: 100%;
+}
+
+/* ── 详情/列表页通用: 蓝色 → 地质红 ── */
+.portal-page .fgbs-header {
+  border-top-color: var(--site-brand) !important;
+}
+.portal-page .fgbs-title {
+  color: var(--site-text);
+}
+.portal-page .fgbs-info-icon {
+  color: var(--site-brand) !important;
+  background: var(--site-brand-soft) !important;
+  border-color: #f0cdd2 !important;
+}
+.portal-page .fgbs-mark {
+  background: var(--site-brand-soft) !important;
+  border-color: #f0cdd2 !important;
+  color: var(--site-brand) !important;
+}
+.portal-page .fgbs-info-value.is-link {
+  color: var(--site-brand);
+}
+.portal-page .fgbs-info-value.is-link:hover {
+  color: var(--site-brand-dark);
+}
+.portal-page .fgbs-info-value .map-go {
+  color: var(--site-brand);
+}
+.portal-page .ai-banner {
+  background: linear-gradient(90deg, var(--site-brand-soft) 0%, #fdf6f7 100%);
+  border-color: #f0cdd2;
+}
+.portal-page .ai-banner-label {
+  color: var(--site-brand);
+}
+.portal-page .ai-chip {
+  border-color: #f0cdd2;
+  color: #a40d26;
+}
+.portal-page .ai-chip:hover {
+  background: var(--site-brand);
+  border-color: var(--site-brand);
+  box-shadow: 0 2px 6px rgba(200, 16, 46, 0.2);
+}
+.portal-page .ai-more {
+  color: var(--site-brand);
+}
+.portal-page .member-relation-link {
+  border-color: #f0cdd2;
+  background: var(--site-brand-soft);
+  color: var(--site-brand) !important;
+}
+.portal-page .member-relation-link:hover {
+  background: var(--site-brand);
+  border-color: var(--site-brand);
+}
+.portal-page .project-link,
+.portal-page .company-link {
+  color: var(--site-brand);
+}
+.portal-page .project-link:hover,
+.portal-page .company-link:hover {
+  color: var(--site-brand-dark);
+}
+.portal-page .el-page-header__title,
+.portal-page .el-page-header__content {
+  color: var(--site-text);
+}
+.portal-page .el-tabs__item.is-active {
+  color: var(--site-brand);
+}
+.portal-page .el-tabs__active-bar {
+  background-color: var(--site-brand);
+}
+/* 人员/单位 头像红色渐变 */
+.portal-page .avatar-pic {
+  background: linear-gradient(135deg, #e01a3c 0%, #c8102e 55%, #a40d26 100%) !important;
+  box-shadow: 0 3px 10px rgba(200, 16, 46, 0.28);
+}
+/* 轨迹卡悬停红 */
+.portal-page .trajectory-card:hover {
+  border-color: var(--site-brand);
+  box-shadow: 0 4px 14px rgba(200, 16, 46, 0.22) !important;
+  background: #fdf6f7;
+}
+.portal-page .trajectory-card:hover .project-link {
+  color: var(--site-brand-dark);
+}
+/* 详情页统计数字/标签点睛色 */
+.portal-page .fgbs-stat .stat-num {
+  color: var(--site-brand);
+}
+.portal-page .fgbs-manager-tag,
+.portal-page .detail-title .el-link,
+.portal-page .opp-item-title.el-link,
+.portal-page .el-link.el-link--primary {
+  color: var(--site-brand);
+}
+/* Element 基础组件 hover/active 同步地质红 */
+.portal-page .el-button--primary {
+  --el-button-bg-color: var(--site-brand);
+  --el-button-border-color: var(--site-brand);
+  --el-button-hover-bg-color: var(--site-brand-dark);
+  --el-button-hover-border-color: var(--site-brand-dark);
+  --el-button-active-bg-color: var(--site-brand-dark);
+  --el-button-active-border-color: var(--site-brand-dark);
+}
+.portal-page .el-button--primary.is-plain,
+.portal-page .el-button--primary.is-link,
+.portal-page .el-button--primary.is-text {
+  --el-button-text-color: var(--site-brand);
+  --el-button-hover-text-color: var(--site-brand-dark);
+  color: var(--site-brand) !important;
+}
+.portal-page .el-button--primary.is-text:hover,
+.portal-page .el-button--primary.is-link:hover {
+  color: var(--site-brand-dark) !important;
+}
+.portal-page .el-table__header th {
+  background: #fdf6f7 !important;
+  color: var(--site-text);
+}
+.portal-page .el-pagination.is-background .el-pager li.is-active {
+  background-color: var(--site-brand);
+}
+.portal-page .el-pagination.is-background .el-pager li:not(.is-active):hover {
+  color: var(--site-brand);
+}
+.portal-page .el-radio-button__input.is-checked .el-radio-button__inner,
+.portal-page .el-checkbox-button.is-checked .el-checkbox-button__inner {
+  background-color: var(--site-brand);
+  border-color: var(--site-brand);
+}
+.portal-page .el-select .el-input.is-focus .el-input__wrapper {
+  box-shadow: 0 0 0 1px var(--site-brand) inset;
+}
+/* ── Element 组件字号/字重层级统一 ── */
+.portal-page .el-button {
+  font-weight: var(--fw-medium);
+  letter-spacing: 0.02em;
+}
+.portal-page .el-button--primary {
+  font-weight: var(--fw-semibold);
+}
+.portal-page .el-tabs__item {
+  font-weight: var(--fw-medium);
+  letter-spacing: 0.02em;
+}
+.portal-page .el-tabs__item.is-active {
+  font-weight: var(--fw-semibold);
+}
+.portal-page .el-table__header th {
+  font-weight: var(--fw-semibold);
+  letter-spacing: 0.02em;
+}
+.portal-page .el-page-header__title {
+  font-weight: var(--fw-semibold);
+}
+.portal-page .el-form-item__label {
+  font-weight: var(--fw-medium);
+}
+.portal-page .el-pagination {
+  font-weight: var(--fw-medium);
+}
+.portal-page .fgbs-title {
+  font-family: var(--site-font-display);
+  font-weight: var(--fw-semibold);
+  letter-spacing: 0.01em;
+}
+.portal-page .detail-title {
+  font-family: var(--site-font-display);
+}
+/* 表格/列表行内主链接 */
+.portal-page .company-link,
+.portal-page .project-link {
+  font-weight: var(--fw-medium);
+}
+/* 数字与金额统一衬线展示体 */
+.portal-page .amount,
+.portal-page .price,
+.portal-page .stat-num {
+  font-family: var(--site-font-display);
+  font-weight: var(--fw-semibold);
+}

@@ -3,11 +3,7 @@
 -->
 <template>
   <div class="person-profile">
-    <el-page-header @back="$router.back()" title="返回列表">
-      <template #content>
-        <span>{{ person.name || "加载中..." }}</span>
-      </template>
-    </el-page-header>
+    <el-page-header @back="goBack" title="返回列表" />
 
     <!-- 顶部主信息卡(白底 + 蓝色顶边, 姓名 + 状态 + 所属单位 + 编辑) -->
     <div class="fgbs-header">
@@ -19,6 +15,7 @@
         <el-tag :type="person.status === 'active' ? 'success' : 'info'" effect="dark" size="small">
           {{ person.status === 'active' ? '在职' : '离职' }}
         </el-tag>
+        <FavoriteButton entity-type="person" :entity-id="personId" />
         <div class="fgbs-head-spacer" />
         <el-button v-if="!editing" type="primary" size="small" class="fgbs-print" @click="viewNetwork">
           <el-icon><Share /></el-icon><span>查看人脉</span>
@@ -52,18 +49,18 @@
           </div>
         </div>
       </div>
+
+      <!-- 个人速览(对标人员详情页: 性别/职称/部门/类别 等多维度) -->
+      <div class="fgbs-ic-bar">
+        <div class="ic-cell" v-for="it in personQuickBar" :key="it.label">
+          <span class="ic-label">{{ it.label }}</span>
+          <span class="ic-value">{{ it.value }}</span>
+        </div>
+      </div>
     </div>
 
     <!-- AI分析能力横幅 -->
-    <div class="ai-banner">
-      <div class="ai-banner-left">
-        <span class="ai-banner-label"><el-icon><MagicStick /></el-icon><b>AI分析:</b></span>
-        <span v-for="(c, i) in AI_CHIPS" :key="i" class="ai-chip" @click="openAiChat(c)">{{ c }}</span>
-      </div>
-      <el-link type="primary" :underline="false" class="ai-more" @click="openAiChat()">
-        更多分析 <el-icon><ArrowRight /></el-icon>
-      </el-link>
-    </div>
+    <AiBanner :chips="AI_CHIPS" @select-chip="openAiChat" @more="openAiChat()" />
 
     <!-- 统计卡片(数字可点击查看明细) -->
     <div class="fgbs-stats">
@@ -89,18 +86,40 @@
       </div>
     </div>
 
+    <!-- 证书墙(person_cert, 含失效预警) -->
+    <el-card v-if="certItems.length" class="cert-card" shadow="never">
+      <template #header>
+        <div class="section-header">
+          <span class="section-title">证书墙（{{ certItems.length }}）</span>
+        </div>
+      </template>
+      <div class="cert-grid">
+        <div v-for="c in certItems" :key="c.id" class="cert-item" :class="{ 'is-expired': c.status !== 'active' }">
+          <div class="cert-type">
+            {{ c.cert_type }}
+            <span v-if="c.major" class="cert-major">{{ c.major }}</span>
+          </div>
+          <div class="cert-dates">{{ fmtCertDate(c.valid_from) }} ~ {{ fmtCertDate(c.valid_to) }}</div>
+          <el-tag :type="certTagType(c.status)" size="small">{{ certStatusZh(c.status) }}</el-tag>
+          <div v-if="c.cert_no" class="cert-no">编号 {{ c.cert_no }}</div>
+        </div>
+      </div>
+    </el-card>
+
     <el-row :gutter="16" style="margin-top: 16px">
       <el-col :span="8">
         <el-card>
           <template #header>
             <span>基本信息</span>
-            <el-button
-              v-if="!editing" type="primary" size="small" style="float: right"
-              @click="startEdit">编辑</el-button>
-            <div v-else style="float: right; display: flex; gap: 8px">
-              <el-button size="small" @click="cancelEdit">取消</el-button>
-              <el-button type="primary" size="small" :loading="saving" @click="saveEdit">保存</el-button>
-            </div>
+            <template v-if="!isPortal">
+              <el-button
+                v-if="!editing" type="primary" size="small" style="float: right"
+                @click="startEdit">编辑</el-button>
+              <div v-else style="float: right; display: flex; gap: 8px">
+                <el-button size="small" @click="cancelEdit">取消</el-button>
+                <el-button type="primary" size="small" :loading="saving" @click="saveEdit">保存</el-button>
+              </div>
+            </template>
           </template>
 
           <!-- 查看模式 -->
@@ -118,27 +137,14 @@
                 >查看人脉</el-link>
               </div>
             </div>
-            <el-descriptions :column="1" border style="margin-top: 16px">
-              <el-descriptions-item label="人员编码">{{ person.code }}</el-descriptions-item>
-              <el-descriptions-item label="职位">{{ person.position || "-" }}</el-descriptions-item>
-              <el-descriptions-item label="所属单位">
-                <span v-if="person.company_id" class="company-link" @click="goCompany(person.company_id)">
-                  {{ companyName }}
-                </span>
-                <span v-else>-</span>
-              </el-descriptions-item>
-              <!-- <el-descriptions-item label="邮箱">{{ person.email || "-" }}</el-descriptions-item> -->
-              <el-descriptions-item label="电话">{{ person.phone || "-" }}</el-descriptions-item>
-              <!-- <el-descriptions-item label="入职日期">{{ person.entry_date || "-" }}</el-descriptions-item> -->
-              <!-- <el-descriptions-item v-if="person.resign_date" label="离职日期">{{ person.resign_date }}</el-descriptions-item> -->
-              <el-descriptions-item
-                v-for="df in dynamicFields"
-                :key="df.field_key"
-                :label="df.display_name"
-              >
-                {{ person.ext_attrs?.[df.field_key] ?? "-" }}
-              </el-descriptions-item>
-            </el-descriptions>
+            <entity-kv-grid
+              :items="personKvItems"
+              :columns="1"
+              variant="grid"
+              fallback="-"
+              style="margin-top: 16px"
+              @entity-click="(entity: any) => entity?.entityId && goCompany(entity.entityId)"
+            />
           </template>
 
           <!-- 编辑模式 -->
@@ -211,7 +217,7 @@
                       size="small" type="warning" effect="plain" style="margin-left: 8px"
                     >联系人不能退出</el-tag>
                     <el-button
-                      v-else-if="t.is_active"
+                      v-else-if="t.is_active && !isPortal"
                       type="danger" text size="small" style="margin-left: 8px"
                       @click.stop="exitProject(t)">退出项目</el-button>
                   </div>
@@ -228,6 +234,9 @@
         </el-card>
       </el-col>
     </el-row>
+
+    <!-- 人员关联图谱(自我中心关系网: 任职单位 / 参与项目 / 认识·共事的人) -->
+    <PersonGraph v-if="!isPortal" :person-id="personId" :person-name="person.name || ''" />
 
     <!-- 统计卡明细抽屉: 参与项目 / 参与中 / 负责项目(ProjectCard 质感) -->
     <el-drawer
@@ -309,6 +318,7 @@
 </template>
 
 <script setup lang="ts">
+defineOptions({ name: "PersonProfile" });
 import { ref, onMounted, computed } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
@@ -317,12 +327,20 @@ import {
 } from "@element-plus/icons-vue";
 import dayjs from "dayjs";
 import api from "@/api";
+import FavoriteButton from "@/components/FavoriteButton.vue";
 import DynamicForm from "@/components/DynamicForm.vue";
 import AiAnalystChat from "@/components/AiAnalystChat.vue";
 import ProjectCard from "@/components/ProjectCard.vue";
+import AiBanner from "@/components/detail/AiBanner.vue";
+import EntityKvGrid from "@/components/detail/EntityKvGrid.vue";
+import PersonGraph from "@/components/PersonGraph.vue";
+import { useNavBase } from "@/utils/navBase";
+import { usePortalMode } from "@/utils/portalMode";
 
 const route = useRoute();
 const router = useRouter();
+const { navTo } = useNavBase();
+const { isPortal } = usePortalMode();
 const personId = Number(route.params.id);
 
 const person = ref<any>({});
@@ -339,6 +357,41 @@ const builtinRules = {
 };
 const companyName = ref<string>("-");
 const companyOptions = ref<any[]>([]);
+
+/** 基本信息字段 → EntityKvGrid 契约(与标讯/公司详情页共用同一组件) */
+const personKvItems = computed(() => {
+  const p = person.value || {};
+  const items: any[] = [
+    { label: "人员编码", field: { displayText: p.code || "" } },
+    { label: "职位", field: { displayText: p.position || "" } },
+    {
+      label: "所属单位",
+      field: { displayText: p.company_id ? companyName.value : "" },
+      entity: p.company_id ? { entityId: p.company_id, name: companyName.value, matched: true } : null,
+    },
+    { label: "电话", field: { displayText: p.phone || "" } },
+  ];
+  for (const df of dynamicFields.value || []) {
+    items.push({
+      label: df.display_name,
+      field: { displayText: p.ext_attrs?.[df.field_key] ?? "" },
+    });
+  }
+  return items;
+});
+
+/* ─────────── 个人速览(对标人员详情页多维度画像) ─────────── */
+const personQuickBar = computed(() => {
+  const ext = person.value?.ext_attrs || {};
+  return [
+    { label: "性别", value: ext.gender || "-" },
+    { label: "职称", value: ext.title || ext.position_level || "-" },
+    { label: "部门", value: ext.department || "-" },
+    { label: "人员类别", value: ext.person_type || ext.person_category || "-" },
+    { label: "状态", value: person.value?.status === "active" ? "在职" : "离职" },
+    { label: "联系电话", value: person.value?.phone || "-" },
+  ];
+});
 
 /* ─────────── 360° 看板: AI 分析 ─────────── */
 const AI_CHIPS = [
@@ -371,6 +424,24 @@ const personRoleLabelMap: Record<string, string> = {
 };
 /** 项目类别中文映射(从选项集直接加载, 独立于动态字段加载时序, 保证 ProjectCard 稳定显示中文) */
 const categoryLabelMap = ref<Record<string, string>>({});
+/* ─────────── 证书墙(person_cert) ─────────── */
+const certItems = ref<any[]>([]);
+function fmtCertDate(v: any): string {
+  if (!v) return "-";
+  return dayjs(v).format("YYYY-MM-DD");
+}
+function certStatusZh(s: string): string {
+  return { active: "有效", expiring: "临期", expired: "已失效" }[s] || s || "-";
+}
+function certTagType(s: string): string {
+  return { active: "success", expiring: "warning", expired: "danger" }[s] || "info";
+}
+async function loadCertificates() {
+  try {
+    const res: any = await api.get(`/persons/${personId}/certificates`, { params: { page_size: 50 } });
+    certItems.value = res?.data?.items || [];
+  } catch { /* ignore */ }
+}
 async function loadCategories() {
   try {
     const res: any = await api.get("/option-sets/project_category/items");
@@ -452,6 +523,8 @@ const aiSteps = computed(() => {
   const meTagNames = new Set(["我", "本人", "我自己"]);
   for (const g of graphNeighbors.value) {
     if (g.type === "Person" && meTagNames.has(String(g.name || "").trim())) continue;
+    // 系统授权关系(权限分发产生, grant=true) 非业务事实, 不进 AI 上下文, 避免误判为任职/参与
+    if (g.grant) continue;
     if (arr.some((x: any) => x.type === g.type && x.name === g.name)) continue;
     arr.push({ ...g });
   }
@@ -553,17 +626,26 @@ function formatDate(d: string): string {
   return d ? dayjs(d).format("YYYY-MM-DD") : "-";
 }
 function goProject(pid: number) {
-  router.push(`/workspace/projects/${pid}`);
+  router.push(navTo(`/projects/${pid}`));
 }
 function goPerson(pid: number) {
-  if (pid) router.push(`/workspace/persons/${pid}`);
+  if (pid) router.push(navTo(`/persons/${pid}`));
 }
 function goCompany(cid: number) {
-  if (cid) router.push(`/workspace/companies/${cid}`);
+  if (cid) router.push(navTo(`/companies/${cid}`));
+}
+/** 返回: 优先回上一级浏览历史(用户刚看过的那一页), 无历史(如直接刷新)时兜底回数据中心列表 */
+function goBack() {
+  const back = window.history.state?.back;
+  if (back) {
+    router.back();
+  } else {
+    router.push("/site/data-center/persons");
+  }
 }
 function viewNetwork() {
   // 以当前登录用户为源, 查通往本人员的人脉路径
-  router.push(`/workspace/network/${personId}`);
+  router.push(navTo(`/network/${personId}`));
 }
 
 async function loadPerson() {
@@ -687,9 +769,11 @@ async function exitProject(t: any) {
 onMounted(() => {
   loadPerson();
   loadTrajectory();
-  loadGraphNeighbors();
+  // 前台数据中心: 用户可能未关联本人节点, 自动调用知识图谱邻居会 400 弹错, 改为按需加载
+  if (!isPortal.value) loadGraphNeighbors();
   loadDynamicFields();
   loadCategories();
+  loadCertificates();
 });
 </script>
 
@@ -827,56 +911,29 @@ onMounted(() => {
   white-space: nowrap;
 }
 
-/* AI分析能力横幅 */
-.ai-banner {
-  margin-top: 14px;
-  background: linear-gradient(90deg, #eef4ff 0%, #f7faff 100%);
-  border: 1px solid #dde7fa;
-  border-radius: 6px;
-  padding: 10px 16px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
+/* 个人速览(对标人员详情页多维度画像) */
+.fgbs-ic-bar {
+  margin-top: 12px;
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 10px;
+  background: #f7f9fc;
+  border: 1px solid #e9edf6;
+  border-radius: 8px;
+  padding: 12px 16px;
 }
-.ai-banner-left {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 8px;
-  flex: 1;
-  min-width: 0;
+.ic-cell { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.ic-label { font-size: 12px; color: #8a919f; }
+.ic-value {
+  font-size: 13px;
+  font-weight: 600;
+  color: #1f2329;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
-.ai-banner-label {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  color: #2979ff;
-  font-size: 14px;
-  flex-shrink: 0;
-  margin-right: 4px;
-}
-.ai-banner-label :deep(.el-icon) { font-size: 14px; }
-.ai-banner-label b { font-weight: 700; }
-.ai-chip {
-  display: inline-block;
-  padding: 4px 12px;
-  border-radius: 14px;
-  background: #fff;
-  border: 1px solid #dde7fa;
-  color: #4b6cb7;
-  font-size: 12.5px;
-  cursor: pointer;
-  transition: all 0.18s ease;
-  user-select: none;
-}
-.ai-chip:hover {
-  background: #2979ff;
-  color: #fff;
-  border-color: #2979ff;
-}
-.ai-more { flex-shrink: 0; }
 
+/* AI分析能力横幅 */
 /* 统计卡片条 */
 .fgbs-stats {
   margin-top: 14px;
@@ -989,7 +1046,63 @@ onMounted(() => {
 }
 .coop-tag { cursor: pointer; }
 
+/* ─── 证书墙(person_cert) ─── */
+.cert-card {
+  margin-top: 14px;
+  border: 1px solid #e9edf6;
+  border-radius: 8px;
+}
+.cert-card :deep(.el-card__header) {
+  border-bottom: 1px solid #f0f2f5;
+}
+.cert-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 12px;
+}
+.cert-item {
+  border: 1px solid #e9edf6;
+  border-radius: 8px;
+  padding: 12px 14px;
+  background: #fafbfc;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  position: relative;
+}
+.cert-item.is-expired {
+  background: #fdf6f6;
+  border-color: #f5c6c6;
+}
+.cert-type {
+  font-size: 14px;
+  font-weight: 600;
+  color: #1f2d3d;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.cert-major {
+  font-size: 12px;
+  font-weight: normal;
+  color: #909399;
+  background: #f0f2f5;
+  border-radius: 3px;
+  padding: 1px 6px;
+}
+.cert-dates {
+  font-size: 12px;
+  color: #909399;
+}
+.cert-no {
+  font-size: 12px;
+  color: #606266;
+  word-break: break-all;
+}
+
 @media (max-width: 900px) {
   .fgbs-info-cards { grid-template-columns: 1fr; }
   .fgbs-stats { grid-template-columns: 1fr 1fr; }
+  .fgbs-ic-bar { grid-template-columns: repeat(3, 1fr); }
 }</style>

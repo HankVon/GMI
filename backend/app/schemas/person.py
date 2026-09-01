@@ -53,6 +53,8 @@ class PersonResponse(BaseModel):
     updated_at: datetime.datetime
     # 列表展示用: 关联公司名 / 最新参与项目发布时间 / 参与项目名列表
     company_name: Optional[str] = None
+    company_province: Optional[str] = None
+    company_city: Optional[str] = None
     latest_project_time: Optional[datetime.datetime] = None
     related_projects: Optional[str] = None
 

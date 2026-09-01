@@ -10,9 +10,9 @@ class Settings:
     APP_VERSION: str = os.getenv("APP_VERSION", "1.0.0")
     DEBUG: bool = os.getenv("DEBUG", "false").lower() == "true"
 
-    # 后端 HTTP 端口: 8100 已加入 Windows 管理员端口排除(永久固定, 不再被系统动态保留抢占)。
-    # 之前用 8001 落在 Hyper-V 动态保留段 7990-8089 内, 无法绑定(Errno 13)。
-    PORT: int = int(os.getenv("PORT", "8100"))
+    # 后端 HTTP 端口: 统一固定 8200(与 start_all.ps1 / vite 代理 / docker 映射一致)。
+    # 已加入 Windows 管理员端口排除(permanent 固定, 不再被系统动态保留抢占)。
+    PORT: int = int(os.getenv("PORT", "8200"))
 
     DATABASE_URL: str = os.getenv("DATABASE_URL", "mysql+pymysql://ssm_user:ssm_pass@localhost:3307/ssm_db?charset=utf8mb4")
     REDIS_URL: str = os.getenv("REDIS_URL", "redis://localhost:6379/0")
@@ -45,6 +45,16 @@ class Settings:
     # 登录防暴力破解(进程内滑动窗口, 单实例部署)
     LOGIN_MAX_FAILURES: int = int(os.getenv("LOGIN_MAX_FAILURES", "5"))
     LOGIN_WINDOW_SECONDS: int = int(os.getenv("LOGIN_WINDOW_SECONDS", "300"))
+
+    # API 通用限流(Redis 分布式计数, 按客户端 IP; 局域网共用出口可放宽)
+    RATE_LIMIT_PER_MINUTE: int = int(os.getenv("RATE_LIMIT_PER_MINUTE", "300"))
+    RATE_LIMIT_WINDOW: int = int(os.getenv("RATE_LIMIT_WINDOW", "60"))
+
+    # 文件上传大小上限(MB), 超限请求直接 413 拒绝
+    MAX_UPLOAD_MB: int = int(os.getenv("MAX_UPLOAD_MB", "200"))
+
+    # 运维告警 webhook(企业微信/钉钉/通用), 为空则不发送
+    NOTIFY_WEBHOOK_URL: str = os.getenv("NOTIFY_WEBHOOK_URL", "")
 
     # 企查查开放平台
     QCC_APP_KEY: str = os.getenv("QCC_APP_KEY", "")

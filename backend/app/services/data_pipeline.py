@@ -12,6 +12,8 @@
 """
 import logging
 import re
+import threading
+import time
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -23,155 +25,17 @@ from app.models.web_clue import WebClue
 from app.models.company import Company
 from app.models.person import Person
 from app.models.project import Project
-from app.services.china_regions import extract_target_province, is_target_province
+from app.services.pipeline_logger import push_log, get_pipeline_logs, clear_pipeline_logs, _STAGE_ZH
+from app.services.pipeline_filters import (
+    FilterRules, check_quality, _content_of,
+    TOPIC_KEYWORDS, EXCLUDE_KEYWORDS, TARGET_PROVINCES, MAX_AGE_DAYS, MIN_CONTENT_LEN,
+)
+from app.services.pipeline_classifiers import (
+    _guess_company_category, _guess_company_type, _guess_company_ownership, _is_bid_notice,
+)
+
 
 logger = logging.getLogger("data_pipeline")
-
-# ============================================================
-# 流水线实时过程日志(内存环形缓冲, 供前端「一键执行」实时查看进度)
-# ============================================================
-import threading
-
-_pipeline_logs: list = []
-_pipeline_log_lock = threading.Lock()
-_PIPELINE_LOG_MAX = 1500
-
-_STAGE_ZH = {"collect": "采集", "filter": "筛选入库", "graph": "图谱构建", "backfill": "前端回填"}
-
-
-def push_log(stage: str, msg: str, level: str = "info") -> None:
-    """追加流水线过程日志。stage ∈ collect/filter/graph/backfill/general。"""
-    entry = {
-        "ts": datetime.now().strftime("%H:%M:%S"),
-        "stage": stage,
-        "msg": str(msg),
-        "level": level,
-    }
-    with _pipeline_log_lock:
-        _pipeline_logs.append(entry)
-        if len(_pipeline_logs) > _PIPELINE_LOG_MAX:
-            del _pipeline_logs[: len(_pipeline_logs) - _PIPELINE_LOG_MAX]
-
-
-def get_pipeline_logs(limit: int = 200) -> list:
-    with _pipeline_log_lock:
-        return list(_pipeline_logs[-limit:])
-
-
-def clear_pipeline_logs() -> None:
-    with _pipeline_log_lock:
-        _pipeline_logs.clear()
-
-
-# ============================================================
-# 管道级筛选规则(可配置, 用户可按需调整)
-# ============================================================
-# 主题关键词: 命中任意即视为「行业相关」, 空=全部接受
-# 用户确认六大方向: 地质 / 地灾 / 矿业 / 水文 / 规划 / 生态
-TOPIC_KEYWORDS = [
-    # 地质
-    "地质", "勘察", "勘查", "测绘", "岩土", "探矿", "钻探", "地勘",
-    # 地灾
-    "地质灾害", "地灾", "滑坡", "崩塌", "泥石流", "地面沉降",
-    # 矿业
-    "矿业权", "采矿", "矿产", "矿山", "资源储量", "矿权",
-    # 水文
-    "水文", "水资源", "水利", "水库", "堤防", "防洪",
-    # 规划
-    "规划", "国土空间", "土地利用", "用途管制", "总体规划", "专项规划",
-    # 生态
-    "生态修复", "环境治理", "矿山修复", "土壤修复", "水污染治理", "生态保护",
-]
-# 排除关键词: 命中任意即丢弃(非项目/废数据)
-EXCLUDE_KEYWORDS = ["招聘", "办公设备", "复印机", "打印机", "电脑耗材", "办公用品",
-                    "会议通知", "培训通知", "征求意见稿", "中标结果公告（废标）", "废标公告",
-                    "食材", "食堂", "食品", "家具", "空调", "物业"]
-# 目标省份: 只保留 四川/西藏/新疆(严格限定)
-TARGET_PROVINCES = ["四川", "西藏", "新疆"]
-# 时效窗口: 公告实际发布时间距今超过该天数不入库(用户确认 180 天)
-MAX_AGE_DAYS = 180
-# 最小正文长度(字符), 太短视为废数据
-MIN_CONTENT_LEN = 50
-
-
-class FilterRules:
-    """管道级筛选规则。字段均可按需覆盖。"""
-
-    def __init__(self, topic_keywords=None, exclude_keywords=None, target_provinces=None,
-                 max_age_days=None, min_content_len=None):
-        self.topic_keywords = topic_keywords or TOPIC_KEYWORDS
-        self.exclude_keywords = exclude_keywords or EXCLUDE_KEYWORDS
-        self.target_provinces = target_provinces or TARGET_PROVINCES
-        self.max_age_days = max_age_days if max_age_days is not None else MAX_AGE_DAYS
-        self.min_content_len = min_content_len if min_content_len is not None else MIN_CONTENT_LEN
-
-    def to_dict(self) -> dict:
-        return {
-            "topic_keywords": self.topic_keywords,
-            "exclude_keywords": self.exclude_keywords,
-            "target_provinces": self.target_provinces,
-            "max_age_days": self.max_age_days,
-            "min_content_len": self.min_content_len,
-        }
-
-
-def _published_dt(published_at) -> Optional[datetime]:
-    if isinstance(published_at, datetime):
-        return published_at
-    if isinstance(published_at, str) and published_at:
-        try:
-            return datetime.fromisoformat(published_at.replace("Z", ""))
-        except ValueError:
-            pass
-    return None
-
-
-def _content_of(clue) -> str:
-    meta = clue.meta if isinstance(clue.meta, dict) else {}
-    return " ".join(filter(None, [
-        clue.title or "", clue.summary or "", clue.content or "",
-        meta.get("overview") or "", meta.get("qualification") or "",
-    ]))
-
-
-def check_quality(clue, rules: Optional[FilterRules] = None) -> tuple[bool, str]:
-    """管道级质量检查: (是否通过, 未通过原因)。
-
-    规则(全部满足才通过):
-      1. 主题相关: 标题/正文命中 TOPIC_KEYWORDS 任一(命中排除词则直接丢弃)
-      2. 地域过滤: 标题 + region 命中 川藏新 任一省市县词
-         (正文不参与地域判定 — 公告正文常含"四川省"等无关提及, 会误匹配非川藏新公告)
-      3. 时效: 实际发布时间距今 <= max_age_days(无时间则通过)
-      4. 非废数据: 正文长度 >= min_content_len
-    """
-    rules = rules or FilterRules()
-    content = _content_of(clue)
-    # 标题 + region(不含正文) 用于地域/主题判定
-    head_pool = f"{clue.title or ''} {clue.region or ''}"
-    full_pool = f"{head_pool} {content}"
-
-    # 1) 排除词优先(全文)
-    for kw in rules.exclude_keywords:
-        if kw and kw in full_pool:
-            return False, f"命中排除词「{kw}」"
-    # 2) 主题相关(标题优先, 正文兜底)
-    if rules.topic_keywords:
-        head_hit = any(k in head_pool for k in rules.topic_keywords if k)
-        full_hit = any(k in full_pool for k in rules.topic_keywords if k)
-        if not (head_hit or full_hit):
-            return False, "未命中主题关键词(非地质/招标/采购相关)"
-    # 3) 地域过滤(川藏新): 仅标题 + region 判定, 防正文误匹配
-    prov = extract_target_province(head_pool)
-    if not prov or not is_target_province(prov):
-        return False, "非目标省份(标题/地域无川藏新, 仅四川/西藏/新疆)"
-    # 4) 时效
-    published = _published_dt(clue.published_at)
-    if published and (datetime.now() - published).days > rules.max_age_days:
-        return False, f"发布时间超期({(datetime.now() - published).days}天 > {rules.max_age_days}天)"
-    # 5) 非废数据
-    if len(content.strip()) < rules.min_content_len:
-        return False, "正文过短(疑似废数据)"
-    return True, ""
 
 
 # ============================================================
@@ -418,7 +282,7 @@ def stage_filter(db: Session, rules: Optional[FilterRules] = None, limit: int = 
 # ============================================================
 # 阶段 3: 实体识别 + 知识图谱
 # ============================================================
-def stage_graph(db: Session, limit: int = 50, use_llm: bool = False) -> dict:
+def stage_graph(db: Session, limit: int = 50, use_llm: bool = True) -> dict:
     """图谱: 对已接受且未抽取的 web_clue 建实体节点 + 关系。
 
     双通道(保证不依赖 Ollama 也能建出项目/单位/人员节点):
@@ -1192,106 +1056,6 @@ def _ensure_or_enrich_company(db: Session, name: str, meta: dict,
     return bool(changed) or created, created
 
 
-# ── 单位三套国家标准分类判定 ──────────────────────────────────────────────
-# 企业类别(行业): 农业/工业/服务业/邮电/通信/社区服务/批发/零售业/交通运输/建筑及安装业/
-#                 医疗卫生/城市建设/旅游/宾馆/餐饮业
-_CATEGORY_KEYWORDS = (
-    ("农业",       ("农业", "农牧", "林业", "渔业", "种植", "养殖", "种业")),
-    ("工业",       ("工业", "制造", "化工", "矿业", "冶炼", "加工", "电力", "能源", "建材", "机械")),
-    ("服务业",     ("服务", "咨询", "劳务", "中介", "广告", "信息", "科技")),
-    ("邮电",       ("邮电", "邮政")),
-    ("通信",       ("通信", "通讯", "电信", "网络", "移动")),
-    ("社区服务",   ("社区服务", "家政")),
-    ("批发",       ("批发",)),
-    ("零售业",     ("零售", "商贸", "商场", "超市", "便利")),
-    ("交通运输",   ("运输", "交通", "物流", "航运", "公路", "铁路", "港")),
-    ("建筑及安装业", ("建筑", "建设", "工程", "施工", "安装", "市政", "岩土", "勘察", "地质工程",
-                    "勘探", "地基", "建工", "装饰", "园林绿化")),
-    ("医疗卫生",   ("医院", "医疗", "卫生", "医药", "疾控", "卫生院")),
-    ("城市建设",   ("城市", "城建", "规划", "国土", "环卫", "公用事业", "房地产", "置业", "物业")),
-    ("旅游",       ("旅游", "旅行", "景区")),
-    ("宾馆",       ("宾馆", "酒店")),
-    ("餐饮业",     ("餐饮", "饭店", "饮食", "美食")),
-)
-
-# 单位类型(所有制/机构性质): 政府部门/院校/科研所/国有企业/集体企业/股份合作企业/联营企业/
-#                           有限责任公司/股份有限公司/私营企业/港澳台商投资企业/外商投资企业
-# 注意: 「股份有限公司」全名含「有限公司」子串, 必须先判股份有限公司;
-#       「街道/办事处/社区」可能同现于村社集体名, 村社集体先于政府机关判。
-_TYPE_KEYWORDS = (
-    ("集体企业",       ("股份经济合作", "村", "社区", "合作社", "联合社", "居委会", "集体经济")),
-    ("政府部门",       ("人民政府", "自然资源和规划局", "自然资源局", "住建局", "住房和城乡建设", "发改委",
-                      "财政局", "交通局", "交通运输局", "水利局", "农业农村局", "林业局", "生态环境局",
-                      "教育局", "卫生健康局", "民政局", "商务局", "审计局", "税务局", "市场监督管理",
-                      "政务", "管委会", "管理局", "厅", "办公室", "执法大队", "监察大队", "消防大队",
-                      "派出所", "街道", "办事处", "乡政府", "镇政府")),
-    ("院校",           ("大学", "学院", "学校", "中学", "小学", "幼儿园", "职业", "技工", "党校")),
-    ("科研所",         ("研究院", "研究所", "设计院", "勘测院", "规划院", "测绘院", "地质调查", "地质队",
-                      "地质", "勘察", "环科院", "监测站", "监测中心", "检测中心", "试验中心")),
-    ("股份合作企业",   ("股份合作",)),
-    ("股份有限公司",   ("股份有限公司", "股份公司")),
-    ("外商投资企业",   ("外商投资", "中外合资", "外资", "中韩", "中德", "中美")),
-    ("港澳台商投资企业", ("港澳台", "台港澳")),
-    ("联营企业",       ("联营",)),
-    ("国有企业",       ("全民所有制", "国有", "国控", "中石油", "中石化", "国家电网", "铁路局")),
-    ("有限责任公司",   ("有限责任公司", "有限公司")),
-    ("私营企业",       ("私营", "民营", "个人独资")),
-)
-
-# 企业性质(经营性质): 国有/合作/合资/独资/集体/私营/个体工商户/报关/其他
-_OWNERSHIP_KEYWORDS = (
-    ("国有",     ("国有", "全民", "中石油", "中石化", "国家电网")),
-    ("集体",     ("集体", "股份经济合作", "合作社", "联合社", "社区", "村")),
-    ("合资",     ("合资", "中外合")),
-    ("独资",     ("独资",)),
-    ("合作",     ("合作", "合伙")),
-    ("私营",     ("私营", "民营", "自然人投资")),
-    ("个体工商户", ("个体工商户", "个体经营", "个体户")),
-    ("报关",     ("报关",)),
-)
-
-
-def _guess_company_category(name: str) -> str:
-    """判定企业类别(行业)。名称中命中最靠前的行业词; 兜底返回 '其他'。"""
-    n = name or ""
-    for cat, kws in _CATEGORY_KEYWORDS:
-        if any(k in n for k in kws):
-            return cat
-    return "其他"
-
-
-def _guess_company_type(name: str) -> str:
-    """判定单位类型(所有制/机构性质)。
-
-    注意: 这里的「单位类型」是工商登记意义的所有制/机构类型(政府部门/院校/科研所/国有/集体/
-    有限责任/股份有限公司等), 不是「业主/施工/监理」这类项目参与角色——项目角色由
-    project_company.role 承载。
-    """
-    n = name or ""
-    for t, kws in _TYPE_KEYWORDS:
-        if any(k in n for k in kws):
-            return t
-    return "其他"
-
-
-def _guess_company_ownership(name: str, econ_kind: str = "") -> str:
-    """判定企业性质(经营性质)。优先看工商 econ_kind, 其次名称关键词; 兜底 '其他'。"""
-    ek = econ_kind or ""
-    for o, kws in _OWNERSHIP_KEYWORDS:
-        if any(k in ek for k in kws):
-            return o
-    n = name or ""
-    for o, kws in _OWNERSHIP_KEYWORDS:
-        if any(k in n for k in kws):
-            return o
-    return "其他"
-
-
-def _is_bid_notice(title: str) -> bool:
-    """标题是否为中标/成交公告(用于推断项目所处阶段)。"""
-    return any(k in (title or "") for k in ("中标", "成交", "中选", "候选人", "结果公告"))
-
-
 def _fill_project_fields(db: Session, project: Project, clue, meta: dict, region: str) -> None:
     """创建/复用项目统一补全: ext_attrs + 起止日期 + 进度记录(幂等)。
 
@@ -1442,10 +1206,16 @@ def _ensure_project_manager(db: Session, project: Project, contact_name: str,
             ProjectMember.is_deleted == False)
     ).scalar() or 0
     if not has_mgr:
+        # 项目尚无经理 → 联系人以 manager 角色加入并设负责人
         _add_project_member(db, project.id, person.id, "manager",
                             responsibility=f"公告联系人(电话 {phone})" if phone else "公告联系人",
                             joined_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
         project.manager_id = person.id
+    else:
+        # 项目已有经理 → 联系人仍须以「联系人」角色加入成员, 保证人员轨迹/项目成员双向一致
+        _add_project_member(db, project.id, person.id, "联系人",
+                            responsibility=f"公告联系人(电话 {phone})" if phone else "公告联系人",
+                            joined_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
     return person, created
 
 

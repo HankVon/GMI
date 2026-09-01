@@ -140,6 +140,7 @@ const streaming = ref(false);
 const aiReady = ref(false);
 const aiCfg = ref<any>(null);
 let abortCtrl: AbortController | null = null;
+let pollTimer: number | null = null;
 let initialized = false;
 /** 记录上一次分析的目标名, 目标变化时强制重置会话(解决组件复用导致对话框停在旧目标) */
 let lastTargetName = props.targetName;
@@ -370,42 +371,39 @@ async function send(text?: string) {
     .map((m, i) => (i === aiIdx ? null : { role: m.role, content: m.content }))
     .filter(Boolean) as { role: string; content: string }[];
 
-  abortCtrl = new AbortController();
-  // 超时保护: 90s 无响应自动中断, 避免 AI 不可达时永久转圈
-  let timedOut = false;
-  const timeoutTimer = window.setTimeout(() => {
-    timedOut = true;
-    abortCtrl?.abort();
-  }, 90000);
+  // 轮询模式(替代 SSE 流式): 规避 Cloudflare 免费隧道切断长连接导致的 network error。
+  // 流程: POST /network/chat/submit 立即返回 task_id → setInterval 轮询 result → 取完整文本显示。
+  const headers = {
+    "Content-Type": "application/json",
+    Authorization: `Bearer ${localStorage.getItem("ssm_token") || ""}`,
+  };
+  const payload = JSON.stringify({
+    base_url: aiCfg.value.base_url,
+    model: aiCfg.value.model,
+    me_name: props.meName || "",
+    target_name: props.targetName || "",
+    steps: props.steps || [],
+    is_path: props.isPath !== false,
+    messages: history,
+  });
+  let taskId = "";
   try {
-    const res = await fetch("/api/v1/ai/network/chat/stream", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${localStorage.getItem("ssm_token") || ""}`,
-      },
-      body: JSON.stringify({
-        base_url: aiCfg.value.base_url,
-        model: aiCfg.value.model,
-        me_name: props.meName || "",
-        target_name: props.targetName || "",
-        steps: props.steps || [],
-        is_path: props.isPath !== false,
-        messages: history,
-      }),
-      signal: abortCtrl.signal,
+    const submit = await fetch("/api/v1/ai/network/chat/submit", {
+      method: "POST", headers, body: payload,
     });
-    if (!res.ok || !res.body) {
-      let detail = `请求失败 (HTTP ${res.status})`;
-      try { detail = (await res.json())?.detail || detail; } catch { /* ignore */ }
-      // 凭证失效: 与 axios 拦截器行为一致, 清除过期 token 并跳转登录
-      if (res.status === 401) {
+    if (!submit.ok) {
+      let detail = `请求失败 (HTTP ${submit.status})`;
+      try { detail = (await submit.json())?.detail || detail; } catch { /* ignore */ }
+      if (submit.status === 401) {
         localStorage.removeItem("ssm_token");
         sessionStorage.removeItem(SESSION_KEY());
         const m = messages.value[aiIdx];
         if (m) m.content = `登录已过期，请重新登录后再试。`;
         flushTyping();
-        window.location.href = "/login";
+        // 已在登录页则不重复跳转, 防止刷新循环
+        if (window.location.pathname !== "/login") {
+          window.location.replace("/login");
+        }
         return;
       }
       const m = messages.value[aiIdx];
@@ -413,60 +411,69 @@ async function send(text?: string) {
       flushTyping();
       return;
     }
-
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder("utf-8");
-    let buf = "";
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buf += decoder.decode(value, { stream: true });
-      const events = buf.split("\n\n");
-      buf = events.pop() || "";
-      for (const evt of events) {
-        for (const line of evt.split("\n")) {
-          if (!line.startsWith("data:")) continue;
-          const data = line.slice(5).trim();
-          if (!data || data === "[DONE]") continue;
-          try {
-            const j = JSON.parse(data);
-            if (j.error) {
-              const m = messages.value[aiIdx];
-              if (m) m.content += `\n\n> [连接中断] ${j.error}`;
-            } else if (typeof j.content === "string") {
-              pushChunk(j.content);
-            }
-          } catch { /* ignore malformed */ }
-        }
-      }
+    taskId = (await submit.json())?.task_id || "";
+    if (!taskId) {
+      const m = messages.value[aiIdx];
+      if (m) m.content = `抱歉，AI 分析师暂时不可用：未获取到任务 ID。`;
+      flushTyping();
+      return;
     }
   } catch (e: any) {
     const m = messages.value[aiIdx];
-    if (m) {
-      if (timedOut) {
-        m.content = (m.content || "") + "\n\n> AI 响应超时（90 秒无输出），请检查右上角头像 → AI 模型配置，或稍后重试。";
-      } else if (e?.name !== "AbortError") {
-        m.content = m.content || `抱歉，AI 分析师暂时不可用：${e?.message || "网络错误"}。`;
-      } else {
-        m.content = m.content + "\n\n（已停止生成）";
-      }
-    }
-  } finally {
-    window.clearTimeout(timeoutTimer);
-    typeDone = true;
-    // 流已结束：剩余 buffer 由 typeTick 加速匀速刷完，typeTick 检测到
-    // typeBuf 为空且 typeDone 后会自动 finishTyping，这里只做兜底
-    const guard = window.setInterval(() => {
-      if (!typeBuf) {
-        clearInterval(guard);
-        finishTyping();
-      }
-    }, 200);
-    abortCtrl = null;
-    streaming.value = false;
-    persist();
-    scrollToBottom();
+    if (m) m.content = `抱歉，AI 分析师暂时不可用：${e?.message || "网络错误"}。`;
+    flushTyping();
+    return;
   }
+
+  // 轮询: 每 2.5s 拉一次结果, 最长 8 分钟
+  const deadline = Date.now() + 8 * 60 * 1000;
+  const poll = async () => {
+    if (Date.now() > deadline) {
+      const m = messages.value[aiIdx];
+      if (m) m.content = (m.content || "") + "\n\n> AI 响应超时（8 分钟未完成），请稍后重试。";
+      flushTyping();
+      streaming.value = false;
+      persist();
+      scrollToBottom();
+      return;
+    }
+    try {
+      const r = await fetch(`/api/v1/ai/network/chat/result/${taskId}`, {
+        method: "GET", headers,
+      });
+      const j = await r.json();
+      if (j?.status === "done") {
+        // 生成完成: 一次性写入完整内容并结束
+        const m = messages.value[aiIdx];
+        if (m && j.content) m.content = j.content;
+        finishTyping();
+        streaming.value = false;
+        persist();
+        scrollToBottom();
+        return;
+      }
+      if (j?.status === "failed" || !r.ok) {
+        const mm = messages.value[aiIdx];
+        if (mm) mm.content = mm.content || `抱歉，AI 分析师暂时不可用：${j?.error || "任务失败"}。`;
+        finishTyping();
+        streaming.value = false;
+        persist();
+        scrollToBottom();
+        return;
+      }
+      // running: 继续轮询
+      pollTimer = window.setTimeout(poll, 2500);
+    } catch (e: any) {
+      const m = messages.value[aiIdx];
+      if (m) m.content = m.content || `抱歉，AI 分析师暂时不可用：${e?.message || "网络错误"}。`;
+      finishTyping();
+      streaming.value = false;
+      persist();
+      scrollToBottom();
+    }
+  };
+  pollTimer = window.setTimeout(poll, 800);
+  abortCtrl = null;
 }
 
 function stopStream() {

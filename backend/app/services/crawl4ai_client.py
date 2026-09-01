@@ -57,9 +57,35 @@ class Crawl4aiClient:
             raise Crawl4aiError(f"crawl4ai {path} error: {data.get('detail')}")
         return data
 
-    def scrape(self, url: str, max_depth: int = 1) -> dict:
-        """抓取单页, 返回 { url, title, markdown, published_at }"""
-        data = self._post("/scrape", {"url": url, "max_depth": max_depth})
+    def scrape(self, url: str, max_depth: int = 1, page_timeout: Optional[int] = None,
+               wait_for: Optional[str] = None, cookies: Optional[list] = None,
+               selector: Optional[str] = None, extra_delay: Optional[float] = None,
+               query_text: Optional[str] = None, input_selector: Optional[str] = None) -> dict:
+        """抓取单页, 返回 { url, title, markdown, published_at }
+
+        page_timeout: 页加载超时毫秒(默认服务端 60000, AI 引擎建议 180000+)
+        cookies: Playwright 格式 cookie 数组(登录态)
+        selector: 只抽该容器的文本(回答框)
+        wait_for: 等待该 CSS 选择器出现
+        extra_delay: 等待后额外停留秒数
+        query_text/input_selector: 模拟 点击输入框->输入->回车(深链不自动执行搜索的引擎)
+        """
+        payload = {"url": url, "max_depth": max_depth}
+        if page_timeout:
+            payload["page_timeout"] = page_timeout
+        if wait_for:
+            payload["wait_for"] = wait_for
+        if cookies:
+            payload["cookies"] = cookies
+        if selector:
+            payload["selector"] = selector
+        if extra_delay is not None:
+            payload["extra_delay"] = extra_delay
+        if query_text:
+            payload["query_text"] = query_text
+        if input_selector:
+            payload["input_selector"] = input_selector
+        data = self._post("/scrape", payload)
         return {
             "url": data.get("url") or url,
             "title": data.get("title") or url,

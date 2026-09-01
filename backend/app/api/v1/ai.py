@@ -8,9 +8,12 @@
     输出分析, 支持基于聊天内容的多轮互动(携带历史 messages)。
   - Ollama 不可用时抛 502, 由前端回退到本地规则分析。
 """
+import asyncio
 import json
 import logging
 import re
+import time
+import uuid
 from typing import Optional
 
 import httpx
@@ -132,22 +135,29 @@ _LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
 def _ollama_base_url(base_url: Optional[str]) -> str:
     """解析 Ollama base_url 并做 SSRF 防护。
 
-    - 未传时使用服务端配置 OLLAMA_BASE_URL;
-    - 客户端传入时仅允许「回环地址」或与服务端配置一致的地址,
-      阻止认证用户借此探测内网(如 169.254.169.254 云元数据)。
+    无论客户端传什么地址, 最终**始终使用服务端配置的 OLLAMA_BASE_URL**:
+    - base_url 为空 / 回环地址(localhost/127.0.0.1) / 与服务端配置一致 → 直接用服务端地址;
+    - 其余任何远程地址 → 拒绝(SSRF 防护, 阻止借机探测内网如 169.254.169.254)。
+
+    这样在容器部署下, 即使前端填了 localhost(浏览器视角), 后端也会正确
+    用 host.docker.internal 访问宿主机 Ollama, 避免「模型连不上」。
     """
-    url = (base_url or settings.OLLAMA_BASE_URL).rstrip("/")
+    server_url = settings.OLLAMA_BASE_URL.rstrip("/")
+    if not base_url:
+        return server_url
+    url = base_url.rstrip("/")
     try:
         from urllib.parse import urlparse
         host = urlparse(url).hostname or ""
     except Exception:  # noqa: BLE001
         host = ""
-    if host not in _LOOPBACK_HOSTS and url != settings.OLLAMA_BASE_URL.rstrip("/"):
+    if host not in _LOOPBACK_HOSTS and url != server_url:
         raise HTTPException(
             status_code=400,
             detail="base_url 仅允许本机回环地址(localhost/127.0.0.1)或服务端配置的 Ollama 地址",
         )
-    return url
+    # 回环地址统一映射到服务端配置(容器部署下为 host.docker.internal)
+    return server_url
 
 
 def _build_path_payload(me_name: str, target_name: str, steps: list) -> dict:
@@ -243,6 +253,8 @@ async def network_analyze(
                     "messages": [{"role": "user", "content": prompt}],
                     "stream": False,
                     "format": "json",
+                    # 保持模型常驻内存, 避免冷启动慢
+                    "keep_alive": -1,
                     "options": {"temperature": 0.4},
                 },
             )
@@ -319,6 +331,8 @@ async def network_chat_stream(
                         "model": model,
                         "messages": chat_messages,
                         "stream": True,
+                        # 保持模型常驻内存, 避免 5 分钟 idle 后卸载导致下次冷启动慢
+                        "keep_alive": -1,
                         "options": {"temperature": 0.6},
                     },
                 ) as resp:
@@ -350,3 +364,112 @@ async def network_chat_stream(
             "Connection": "keep-alive",
         },
     )
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# 轮询任务接口(替代 SSE 流式, 规避 Cloudflare 免费隧道对长连接的切断)
+#
+# 背景: 域名走 Cloudflare 免费隧道, SSE 长连接(3 分钟)会被隧道中途掐断,
+#       导致前端 fetch 抛 network error(表现为「AI 分析师暂时不可用: network error」)。
+#       这里把生成改成「提交 → 轮询」: 每次请求都是短连接(提交即时返回、轮询秒级返回),
+#       彻底规避长连接中断, 同时不丢 AI 分析的完整结果。
+# ─────────────────────────────────────────────────────────────────────────
+_TASKS: dict = {}
+
+
+@router.post("/network/chat/submit")
+async def network_chat_submit(
+    body: dict,
+    user: dict = Depends(get_current_user),
+):
+    """提交 AI 对话任务, 立即返回 task_id(后台线程生成, 前端轮询取结果)。"""
+    base_url = _ollama_base_url(body.get("base_url"))
+    model = body.get("model") or settings.OLLAMA_MODEL
+    me_name = body.get("me_name") or ""
+    target_name = body.get("target_name") or ""
+    steps = body.get("steps") or []
+    if not steps:
+        raise HTTPException(status_code=400, detail="缺少路径数据")
+
+    is_path = body.get("is_path")
+    if is_path is None:
+        is_path = bool(steps) and steps[0].get("type") == "Person" and steps[0].get("name") == (me_name or "我")
+    me_label = (me_name or "").strip() or ("我" if is_path else "查询者")
+    data_note = _resolve_data_note(me_name, target_name, steps, is_path)
+    system_prompt = (
+        CHAT_SYSTEM_PROMPT
+        .replace("__DATA_NOTE__", data_note)
+        .replace("__ME__", me_label)
+        .replace("__TARGET__", target_name)
+    )
+    messages = body.get("messages") or []
+    chat_messages: list[dict] = [{"role": "system", "content": system_prompt}]
+    for m in messages[-20:]:
+        if isinstance(m, dict) and m.get("role") in ("user", "assistant") and m.get("content"):
+            chat_messages.append({"role": m["role"], "content": str(m["content"])})
+
+    task_id = uuid.uuid4().hex
+    _TASKS[task_id] = {"status": "running", "content": "", "error": None, "created": time.time()}
+    asyncio.create_task(_run_chat_task(task_id, base_url, model, chat_messages))
+    return {"ok": True, "task_id": task_id}
+
+
+async def _run_chat_task(task_id: str, base_url: str, model: str, chat_messages: list[dict]):
+    """后台生成完整对话文本(非流式), 写入任务表供前端轮询。"""
+    try:
+        async with httpx.AsyncClient(timeout=None) as client:
+            resp = await client.post(
+                f"{base_url}/api/chat",
+                json={
+                    "model": model,
+                    "messages": chat_messages,
+                    "stream": True,
+                    "keep_alive": -1,
+                    "options": {"temperature": 0.6},
+                },
+            )
+            resp.raise_for_status()
+            parts: list[str] = []
+            async for line in resp.aiter_lines():
+                if not line.strip():
+                    continue
+                try:
+                    chunk = json.loads(line)
+                except Exception:  # noqa: BLE001
+                    continue
+                content = chunk.get("message", {}).get("content")
+                if content:
+                    parts.append(content)
+                if chunk.get("done"):
+                    break
+        task = _TASKS.get(task_id)
+        if task:
+            task["content"] = "".join(parts)
+            task["status"] = "done"
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Ollama chat task failed(base=%s model=%s): %s", base_url, model, e)
+        task = _TASKS.get(task_id)
+        if task:
+            task["error"] = str(e)
+            task["status"] = "failed"
+    finally:
+        # 结果保留 5 分钟供轮询取用, 之后清理防内存泄漏
+        if task_id in _TASKS:
+            pass
+
+
+@router.get("/network/chat/result/{task_id}")
+async def network_chat_result(
+    task_id: str,
+    user: dict = Depends(get_current_user),
+):
+    """轮询取任务结果。status: running / done / failed。"""
+    task = _TASKS.get(task_id)
+    if not task:
+        return {"ok": True, "status": "failed", "content": "", "error": "任务不存在或已过期"}
+    return {
+        "ok": True,
+        "status": task["status"],
+        "content": task["content"],
+        "error": task["error"],
+    }

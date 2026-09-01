@@ -157,6 +157,8 @@ const stagePercent = computed(() => {
   font-size: 15px;
   font-weight: 600;
   color: #1f2d3d;
+  flex: 1;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -192,6 +194,7 @@ const stagePercent = computed(() => {
   background: #eef4ff;
   font-size: 12px;
 }
+.pc-meta-text { min-width: 0; word-break: break-word; overflow-wrap: break-word; }
 .pc-meta-icon.role { color: #2979ff; background: #eef4ff; }
 .pc-meta-icon.amount { color: #b7791f; background: #fdf3e2; }
 .pc-meta-text.amount { color: #b7791f; font-weight: 600; }
@@ -232,8 +235,15 @@ const stagePercent = computed(() => {
   gap: 4px;
   font-size: 12.5px;
   color: #606266;
+  min-width: 0;
 }
-.pc-info-item :deep(.el-icon) { color: #2979ff; font-size: 13px; }
+.pc-info-item span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pc-info-item :deep(.el-icon) { color: #2979ff; font-size: 13px; flex-shrink: 0; }
 
 /* 描述 */
 .pc-desc {

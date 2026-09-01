@@ -51,8 +51,6 @@ _QUERY_TEMPLATES = [
     (" 联系人 联系电话 办公地址", "联系方式"),
     (" 法定代表人 注册资本 企业类型 工商信息", "工商信息"),
     (" 成立日期 经营范围 登记机关", "工商信息2"),
-    (" 官网 公司简介", "简介"),
-    (" 中标 成交 公告", "招标"),
 ]
 
 
@@ -93,9 +91,11 @@ def judge_relevant(unit_name: str, title: str, snippet: str) -> bool:
     return unit_name in title or (len(core) >= 4 and core in title)
 
 
-def extract_info(unit_name: str, text: str) -> dict:
+def extract_info(unit_name: str, text: str, timeout: float = 120.0, model: str = "") -> dict:
     """LLM 从文本(搜索结果/正文)结构化抽取单位信息。
 
+    timeout: 单次 Ollama 调用超时(秒), 深度补全批量场景可传更短值避免排队干等。
+    model: 指定模型(空用配置默认), 弱算力下可用 qwen2.5:7b 提速。
     返回 {contact, address, legal_rep, email, website, summary, _source}
     任何字段缺失 → 空字符串; 不编造(正文不存在则为空)。
     """
@@ -111,7 +111,7 @@ def extract_info(unit_name: str, text: str) -> dict:
         f"文本：\n{text[:4000]}"
     ).format(unit=unit_name)
     try:
-        out = _extract_json(_generate(prompt, timeout=120))
+        out = _extract_json(_generate(prompt, timeout=timeout, model=model))
     except LLMUnavailable:
         logger.warning("ollama 不可用, LLM 抽取跳过")
         return {}

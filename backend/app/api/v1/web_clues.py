@@ -17,7 +17,7 @@ from sqlalchemy import select, func, or_
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.middleware.auth import get_current_user
+from app.middleware.auth import get_current_user, require_permission
 from app.models.web_source import WebSource
 from app.models.web_clue import WebClue
 from app.models.project import Project
@@ -33,9 +33,18 @@ from app.schemas.common import PaginatedResponse
 from app.services.crawl4ai_client import crawl4ai_client, Crawl4aiError
 from app.services.clue_filter import ClueFilter
 from app.services import llm_enhance
+from app.services.clue_parsers import (
+    _parse_dt, _time_window_reject, _ccgp_procurement_result, _ccgp_fetch_html,
+    _ccgp_attachments,
+)
+from app.services.notice_classify import classify_notice_type
 
 logger = logging.getLogger("web_clues")
-router = APIRouter(prefix="/web-clues", tags=["网页线索"])
+router = APIRouter(
+    prefix="/web-clues",
+    tags=["网页线索"],
+    dependencies=[Depends(require_permission("menu_workspace_web_clues"))],
+)
 
 # ---------- 抓取日志缓冲(内存环形队列, 供前端实时查看进度) ----------
 _crawl_logs: list = []
@@ -419,229 +428,17 @@ async def enhance_clues(data: WebClueEnhanceRequest, db: Session = Depends(get_d
 # ============================================================
 # crawl4ai 抓取 + 筛选
 # ============================================================
-def _parse_dt(s) -> Optional[datetime.datetime]:
-    """解析日期字符串(兼容 'YYYY-MM-DD HH:MM:SS' 与 ISO)。失败返回 None。"""
-    if not s:
-        return None
-    s = str(s).strip().replace("Z", "+00:00").replace("T", " ")
-    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d", "%Y/%m/%d %H:%M:%S", "%Y年%m月%d日 %H时%M分"):
-        try:
-            return datetime.datetime.strptime(s[:19], fmt)
-        except ValueError:
-            continue
-    try:
-        return datetime.datetime.fromisoformat(s)
-    except ValueError:
-        return None
-
-
-def _time_window_reject(meta: Optional[dict]) -> Optional[str]:
-    """按公告截止时间窗口过滤。返回拒绝原因字符串, 通过则返回 None。
-
-    规则: expire_time(截止时间)存在且已过期 -> 拒绝; 其他情况通过。
-    """
-    if not meta or not isinstance(meta, dict):
-        return None
-    now = datetime.datetime.now()
-    expire = _parse_dt(meta.get("expire_time") or meta.get("end_time"))
-    if expire and expire < now:
-        return f"公告已截止(截止时间 {expire:%Y-%m-%d %H:%M})"
-    return None
-
-
-def _ccgp_procurement_result(text: str) -> list:
-    """从中国政府采购网中标公告详情 HTML 提取「三、采购结果」表格(供应商/地址/金额)。
-
-    详情页为静态 HTML, 采购结果在 supplier 容器内的 <table>, 列:
-      供应商名称 | 供应商地址 | 中标（成交）金额 | 评审总得分
-    兼容 markdown pipe / tab 分隔的纯文本输入(内部工具复用)。
-    返回 [ {supplier, address, amount} ]。
-    """
-    import re as _re
-    if not text:
-        return []
-    # 0) 文本列表格式: 供应商名称：X 供应商地址：Y 中标（成交）金额：Z (无表格)
-    if _re.search(r"供应商名称[：:]", text) and "供应商名称：" in text.replace("&nbsp;", " "):
-        plain = _re.sub(r"<[^>]+>", " ", text)
-        plain = _re.sub(r"&nbsp;", " ", plain)
-        plain = _re.sub(r"\s+", " ", plain)
-        m_name = _re.search(r"供应商名称[：:\s]*([^\s]{2,})", plain)
-        if m_name:
-            supplier = m_name.group(1).strip()
-            m_addr = _re.search(r"供应商地址[：:\s]*([^\s]{4,})", plain)
-            m_amt = _re.search(r"金额[^0-9]{0,15}?([\d,]+\.\d+)", plain)
-            if m_name and supplier and not _re.fullmatch(r"[\d\s]+", supplier):
-                return [{
-                    "supplier": supplier[:120],
-                    "address": (m_addr.group(1) if m_addr else "")[:200],
-                    "amount": ((m_amt.group(1) if m_amt else "") + "元")[:80],
-                }]
-    # 1) 若为 HTML: 提取 supplier 容器内的表格
-    if "<table" in text or "<td" in text:
-        seg = text
-        # 定位「三、采购结果」/「中标（成交）信息」, 从其后开始; 找不到则退回「采购包」关键词
-        i = seg.find("三、采购结果")
-        if i < 0:
-            i = seg.find("中标（成交）信息")
-        if i < 0:
-            i = seg.find("中标/成交结果信息")
-        if i < 0:
-            i = seg.find("采购结果")
-        if i >= 0:
-            seg = seg[i:]
-        else:
-            # 无任何标题: 找含「供应商名称」表头的 table 起点
-            i = seg.find("供应商名称")
-            if i >= 0:
-                seg = seg[max(0, i - 300):]
-            else:
-                i = seg.find("采购包")
-                if i >= 0:
-                    seg = seg[i:]
-        # 找第一个 table(供应商结果表)
-        ti = seg.find("<table")
-        if ti < 0:
-            return []
-        ti2 = seg.find("</table>", ti)
-        if ti2 < 0:
-            return []
-        table_html = seg[ti:ti2 + len("</table>")]
-        rows = []
-        for rm in _re.finditer(r"<tr[^>]*>([\s\S]*?)</tr>", table_html):
-            cells = [_re.sub(r"<[^>]+>", "", c).strip()
-                     for c in _re.findall(r"<t[dh][^>]*>([\s\S]*?)</t[dh]>", rm.group(1))]
-            if not cells:
-                continue
-            cells = [c for c in cells if c]
-            # 序号列: 首列纯数字(如「1」)视为行号, 供应商从第二列开始
-            if cells and _re.fullmatch(r"\d{1,3}", cells[0].strip()) and len(cells) >= 4:
-                cells = cells[1:]
-            rows.append(cells)
-        result = []
-        header_seen = False
-        for cells in rows:
-            if any(("供应商名称" in c or "供应商地址" in c) for c in cells):
-                header_seen = True
-                continue
-            if not header_seen:
-                continue
-            if len(cells) < 3:
-                continue
-            supplier = cells[0]
-            address = cells[1]
-            amount_cell = ""
-            for c in cells[2:]:
-                if "元" in c or _re.search(r"\d", c):
-                    amount_cell = c
-                    break
-            if not amount_cell and len(cells) > 3:
-                amount_cell = cells[2]
-            amount_cell = amount_cell.replace(",", "")
-            if supplier and not _re.fullmatch(r"[\d\s]+", supplier) and "供应商名称" not in supplier:
-                result.append({"supplier": supplier[:120], "address": address[:200], "amount": amount_cell[:80]})
-        if result:
-            return result
-        # HTML 表格未解析出, 回退到纯文本逻辑
-        text = _re.sub(r"<[^>]+>", "\n", text)
-
-    # 2) 纯文本: 定位「三、采购结果」段(tab 分隔或 markdown pipe)
-    start = text.find("三、采购结果")
-    if start < 0:
-        start = text.find("中标（成交）供应商")
-    if start < 0:
-        start = text.find("采购结果")
-    if start < 0:
-        return []
-    end = len(text)
-    for kw in ("四、主要标的信息", "五、评审专家", "五、评审"):
-        i = text.find(kw, start + 10)
-        if 0 < i < end:
-            end = i
-            break
-    block = text[start:end]
-    result = []
-    header_seen = False
-
-    def _row(cells: list):
-        if not cells:
-            return None
-        if any(c.strip().replace("-", "").replace("+", "") == "" for c in cells):
-            return None
-        cleaned = [c for c in cells if c.strip()]
-        if not cleaned:
-            return None
-        if any(("供应商名称" in c or "供应商地址" in c) for c in cleaned):
-            return {"_header": True}
-        if all(_re.fullmatch(r"[-:\s]*", c) for c in cleaned):
-            return None
-        if len(cleaned) < 3:
-            return None
-        supplier = cleaned[0]
-        address = cleaned[1]
-        amount_cell = ""
-        for c in cleaned[2:]:
-            if "元" in c or _re.search(r"\d", c):
-                amount_cell = c
-                break
-        if not amount_cell and len(cleaned) > 3:
-            amount_cell = cleaned[2]
-        amount_cell = amount_cell.replace(",", "")
-        if supplier and not _re.fullmatch(r"[\d\s]+", supplier) and "供应商名称" not in supplier:
-            return {"supplier": supplier[:120], "address": address[:200], "amount": amount_cell[:80]}
-        return None
-
-    for line in block.split("\n"):
-        line = line.strip()
-        if not line:
-            continue
-        if line.startswith("|") and line.endswith("|"):
-            cells = [c.strip() for c in line.strip("|").split("|")]
-            r = _row(cells)
-        elif "\t" in line:
-            cells = [c.strip() for c in line.split("\t")]
-            r = _row(cells)
-        else:
-            continue
-        if r is None:
-            continue
-        if r.get("_header"):
-            header_seen = True
-            continue
-        if not header_seen:
-            continue
-        result.append(r)
-        header_seen = False
-    return result
-
-
-def _ccgp_fetch_html(url: str, timeout: float = 30.0) -> str:
-    """抓取中国政府采购网静态页, 自动处理 GB2312/GBK 编码。"""
-    try:
-        resp = httpx.get(url, headers={
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0",
-            "Referer": "https://www.ccgp.gov.cn/",
-        }, timeout=timeout, follow_redirects=True)
-        resp.raise_for_status()
-        raw = resp.content
-        for enc in ("utf-8", "gb18030", "gbk"):
-            try:
-                return raw.decode(enc)
-            except Exception:  # noqa: BLE001
-                continue
-        return raw.decode("gb18030", errors="replace")
-    except Exception as e:  # noqa: BLE001
-        logger.warning("[ccgp] fetch %s error: %s", url, e)
-        return ""
-
-
 def _ccgp_crawl_list(source: WebSource, task: str, logf) -> list:
-    """采集中国政府采购网中标公告列表 + 详情, 返回入库 page dict 列表。
+    """采集中国政府采购网全国公告(中标/成交/终止/更正/采购意向)列表 + 详情, 返回入库 page dict 列表。
 
     source.url 形如: https://www.ccgp.gov.cn/cggg/dfgg/zbgg/index.htm
+    (栏目切换: zbgg 中标 / cjgg 成交 / zfgg 终止废标 / gzgg 更正 / cgyx 采购意向)
     列表页为静态 HTML, 解析公告链接/标题/时间/采购人, 再抓详情提取供应商。
     logf(msg, level) 用于透出进度。
     """
     list_url = source.url
+    # 列表页所在目录作为相对 ./ 链接的解析基址(不同栏目目录不同)
+    base_url = list_url.rsplit("/", 1)[0] + "/"
     pages = []
     seen = set()
     # 分页: index.htm -> index_2.htm -> index_3.htm ...; max_pages 为单页条数上限,
@@ -657,7 +454,7 @@ def _ccgp_crawl_list(source: WebSource, task: str, logf) -> list:
         if not html:
             logf(f"ccgp 第 {page_no} 页列表抓取失败(空响应)", "error")
             break
-        items = _parse_ccgp_list_items(html)
+        items = _parse_ccgp_list_items(html, base_url)
         logf(f"第 {page_no} 页列表解析到 {len(items)} 条公告", "info")
         if not items:
             break
@@ -673,12 +470,27 @@ def _ccgp_crawl_list(source: WebSource, task: str, logf) -> list:
             detail_html = _ccgp_fetch_html(url)
             wins = _ccgp_procurement_result(detail_html)
             detail_text = _ccgp_html_to_text(detail_html)
+            col = source.url.rstrip("/").split("/")[-2] if "/dfgg/" in source.url else ""
+            notice_type = _CCGP_COL_NOTICE.get(col) or classify_notice_type(it.get("title") or "")
+            attachments = _ccgp_attachments(detail_html)
             meta = {
                 "purchaser": it.get("purchaser") or "",
                 "region": it.get("region") or "",
                 "published_at": it.get("published_at") or "",
-                "notice_type": "中标（成交）公告",
+                "notice_type": notice_type,
+                # 附件区 <a href> 此前被 _ccgp_html_to_text 丢弃, 导致前台无法下载
+                "attachments": attachments,
             }
+            # 附件抓取缺口监控: 抓到详情页但无附件 → 解析器可能需适配(强信号);
+            # 连详情页都没抓到 → 网络/反爬(弱信号)。按来源记日志便于排查。
+            if not attachments:
+                from app.services.attachment_monitor import log_gap
+                meta["attachment_gap"] = log_gap(
+                    source=getattr(source, "name", "") or source.url,
+                    url=url,
+                    reason="no_detail" if not detail_html else "empty_fjxx",
+                    title=it.get("title") or "",
+                )
             if wins:
                 meta["procurement_result"] = wins
             pages.append({
@@ -812,12 +624,24 @@ def _beijing_crawl_list(source: WebSource, task: str, logf) -> list:
             detail_html = _beijing_fetch_html(url)
             wins = _beijing_winners(detail_html)
             detail_text = _ccgp_html_to_text(detail_html)
+            attachments = _ccgp_attachments(detail_html)
             meta = {
                 "purchaser": "",
                 "region": "北京",
                 "published_at": date,
-                "notice_type": "中标（成交）公告",
+                "notice_type": classify_notice_type(title or ""),
+                # 北京政采详情页若沿用 ccgp 的 ul.fjxx 附件结构则可解析到, 否则返回空
+                "attachments": attachments,
             }
+            # 同 ccgp 采集点: 附件为空时记录来源缺口
+            if not attachments:
+                from app.services.attachment_monitor import log_gap
+                meta["attachment_gap"] = log_gap(
+                    source=getattr(source, "name", "") or source.url,
+                    url=url,
+                    reason="no_detail" if not detail_html else "empty_fjxx",
+                    title=title or "",
+                )
             if wins:
                 meta["procurement_result"] = wins
             pages.append({
@@ -830,14 +654,25 @@ def _beijing_crawl_list(source: WebSource, task: str, logf) -> list:
     return pages
 
 
-def _parse_ccgp_list_items(html: str) -> list:
+# 中国政府采购网全国公告栏目(列表页目录名): 中标/成交/终止废标/更正
+_CCGP_LIST_CATS = ("zbgg", "cjgg", "fbgg", "zfgg", "gzgg")
+# ccgp 列表栏目 → 公告类型(用于 ccgp_list 来源按栏目精确归类, 比标题关键词更可靠)
+_CCGP_COL_NOTICE = {
+    "zbgg": "中标", "cjgg": "成交", "gzgg": "变更",
+    "fbgg": "终止", "zfgg": "终止", "gkzb": "招标", "cgyx": "其他",
+}
+
+
+def _parse_ccgp_list_items(html: str, base_url: str = "https://www.ccgp.gov.cn/cggg/dfgg/zbgg/") -> list:
     """解析中国政府采购网列表页的公告条目。
 
     结构: <li><a href="/cggg/dfgg/zbgg/202608/t....htm">标题</a>
     标题旁有「中标公告 发布时间：xxx 地域：xx 采购人：xxx」文本。
+    base_url: 列表页所在目录(用于解析相对 ./ 链接), 由调用方按来源 URL 推导。
     返回 [ {url,title,published_at,purchaser,region} ]。
     """
     import re as _re
+    from urllib.parse import urljoin
     items = []
     # 匹配 <li ...> ... <a href="...">title</a> ... 区域文本
     for m in _re.finditer(r"<li[^>]*>([\s\S]{0,600}?)</li>", html):
@@ -847,10 +682,11 @@ def _parse_ccgp_list_items(html: str) -> list:
             continue
         href = am.group(1)
         title = _re.sub(r"<[^>]+>", "", am.group(2)).strip()
+        # 解析详情链接: 用列表页目录作基址做相对路径归一化(兼容 ./ 与 ../ 与绝对路径)
         if not href.startswith("http"):
-            href = href.replace("./", "https://www.ccgp.gov.cn/cggg/dfgg/zbgg/", 1) if href.startswith("./") \
-                else "https://www.ccgp.gov.cn" + href
-        if "zbgg" not in href and "cjgg" not in href:
+            href = urljoin(base_url, href)
+        # 仅抓取公告类栏目(中标/成交/终止废标/更正/采购意向), 排除其他无关链接
+        if not any(cat in href for cat in _CCGP_LIST_CATS):
             continue
         item = {"url": href, "title": title}
         tm = _re.search(r"发布时间[：:]\s*<em>([\s\S]{0,30}?)</em>", seg)

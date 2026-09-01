@@ -23,7 +23,9 @@ class UserBrief(BaseModel):
     username: str
     display_name: str
     email: Optional[str] = None
+    phone: Optional[str] = None
     department_id: Optional[int] = None
+    person_id: Optional[int] = None
     roles: list[str] = []
     permissions: list[str] = []
 

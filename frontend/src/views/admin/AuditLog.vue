@@ -82,8 +82,9 @@ const total = ref(0);
 const page = ref(1);
 const pageSize = 20;
 const filters = ref({ username: "", action: "", resource_type: "", dateRange: null as any });
-const actions = ["create","update","delete","export","import","login","logout"];
-const resources = ["project","person","project_member","field_metadata","option_set","excel"];
+const actions = ["create","update","delete","export","import","login","logout","post","put","patch"];
+const resources = ["project","person","project_member","field_metadata","option_set","excel",
+  "rbac","auth","audit","company","intent","web_clues","public","search","ai"];
 
 const fieldChanges = ref<any[]>([]);
 const fcTotal = ref(0);
@@ -99,7 +100,7 @@ async function reload() {
   const p: any = { page: page.value, page_size: pageSize };
   if (filters.value.action) p.action = filters.value.action;
   if (filters.value.resource_type) p.resource_type = filters.value.resource_type;
-  if (filters.value.username) p.user_id = filters.value.username;
+  if (filters.value.username) p.username = filters.value.username;
   if (filters.value.dateRange) { p.date_from = filters.value.dateRange[0]; p.date_to = filters.value.dateRange[1]; }
   const res: any = await api.get("/audit/operations", { params: p });
   logs.value = res.items || []; total.value = res.total || 0;

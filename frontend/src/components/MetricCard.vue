@@ -45,18 +45,18 @@ const formattedValue = computed(() => {
 <style scoped>
 .metric-card {
   min-width: 180px;
-  background: #fff;
-  border: 1px solid var(--ssm-border, #e9edf6);
-  border-radius: 12px;
-  box-shadow: var(--ssm-shadow, 0 2px 12px rgba(30, 60, 114, 0.06));
-  padding: 18px 20px;
+  background: var(--ssm-card-bg, #fff);
+  border: 1px solid var(--ssm-border, #ece8e4);
+  border-radius: 10px;
+  box-shadow: var(--ssm-shadow, 0 2px 12px rgba(60, 30, 30, 0.05));
+  padding: 20px 22px;
   position: relative;
   overflow: hidden;
-  transition: all 0.2s ease;
+  transition: all 0.25s ease;
 }
 .metric-card:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 8px 24px rgba(30, 60, 114, 0.1);
+  transform: translateY(-3px);
+  box-shadow: 0 10px 28px rgba(60, 30, 30, 0.11);
 }
 .metric-card::after {
   content: "";
@@ -65,22 +65,22 @@ const formattedValue = computed(() => {
   left: 0;
   right: 0;
   height: 3px;
-  background: linear-gradient(90deg, #2979ff, #4f8aff);
+  background: var(--ssm-primary-grad, linear-gradient(90deg, #a51c30, #c0394d));
   border-radius: 3px 3px 0 0;
 }
 .metric-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 10px;
+  margin-bottom: 12px;
 }
-.metric-title { font-size: 13px; color: #909399; font-weight: 500; }
+.metric-title { font-size: 13px; color: var(--ssm-text-secondary, #8c8784); font-weight: 500; }
 .metric-icon {
   width: 30px;
   height: 30px;
   border-radius: 8px;
-  background: #eef4ff;
-  color: #2979ff;
+  background: var(--ssm-primary-soft, #fbecee);
+  color: var(--ssm-primary, #a51c30);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -88,13 +88,14 @@ const formattedValue = computed(() => {
 }
 .metric-body { display: flex; align-items: baseline; gap: 4px; }
 .metric-value {
-  font-size: 30px;
+  font-size: 36px;
   font-weight: 700;
-  color: #1f2d3d;
-  font-family: "DIN Alternate", "Arial", sans-serif;
+  color: var(--ssm-text-main, #1c1a1a);
+  font-family: "Georgia", "Times New Roman", serif;
   letter-spacing: 0.5px;
+  line-height: 1;
 }
-.metric-suffix { font-size: 13px; color: #909399; }
-.metric-trend { margin-top: 8px; display: flex; align-items: center; gap: 4px; font-size: 12px; }
+.metric-suffix { font-size: 13px; color: var(--ssm-text-secondary, #8c8784); }
+.metric-trend { margin-top: 10px; display: flex; align-items: center; gap: 4px; font-size: 12px; }
 .trend-hint { color: #c0c4cc; margin-left: 4px; }
 </style>

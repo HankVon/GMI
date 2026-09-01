@@ -53,6 +53,18 @@
         >
           <el-icon><Upload /></el-icon>导入
         </el-button>
+        <template v-if="selectable && selectedRows.length">
+          <el-button type="danger" size="small" :loading="batchDeleting" @click="batchDelete">
+            <el-icon><Delete /></el-icon>批量删除({{ selectedRows.length }})
+          </el-button>
+          <el-button
+            v-if="canBatchDept"
+            type="primary" size="small"
+            @click="openBatchDept"
+          >
+            <el-icon><OfficeBuilding /></el-icon>批量改部门
+          </el-button>
+        </template>
       </div>
     </div>
 
@@ -123,9 +135,13 @@
       highlight-current-row
       @row-click="(row: any) => emit('rowClick', row)"
       @sort-change="(s: any) => emit('sortChange', s)"
+      @selection-change="onSelectionChange"
       style="width: 100%"
       max-height="calc(100vh - 200px)"
     >
+      <!-- 批量选择列 -->
+      <el-table-column v-if="selectable" type="selection" width="42" fixed="left" />
+
       <!-- 内置列 -->
       <el-table-column
         v-for="col in visibleColumns"
@@ -212,13 +228,68 @@
       @change="handleFileUpload"
     />
 
+    <!-- 批量改部门 -->
+    <el-dialog v-model="batchDeptDialog" title="批量改部门" width="420px">
+      <el-form label-width="80px">
+        <el-form-item label="部门">
+          <el-select v-model="batchDeptId" placeholder="选择目标部门" style="width: 100%" clearable>
+            <el-option v-for="d in departments" :key="d.id" :label="d.name" :value="d.id" />
+          </el-select>
+        </el-form-item>
+      </el-form>
+      <div class="import-stats">共选中 {{ selectedRows.length }} 条记录，将全部更新到所选部门。</div>
+      <template #footer>
+        <el-button @click="batchDeptDialog = false">取消</el-button>
+        <el-button type="primary" :loading="batchDeptLoading" @click="submitBatchDept">确定</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 导入后台任务进度 -->
+    <el-dialog
+      v-model="importDialog"
+      title="导入进度"
+      width="560px"
+      :close-on-click-modal="false"
+      :close-on-press-escape="false"
+      :show-close="importTask?.status !== 'running'"
+    >
+      <div v-if="importTask">
+        <div class="import-stage">
+          <span class="import-stage-text">{{ importTask.stage }}</span>
+          <span v-if="importTask.status === 'running'" class="import-spin" />
+        </div>
+        <el-progress
+          :percentage="importPercent"
+          :status="importTask.status === 'failed' ? 'exception' : (importTask.status === 'done' ? 'success' : undefined)"
+          :stroke-width="14"
+        />
+        <div class="import-stats">
+          已新建 {{ importTask.imported }} · 更新 {{ importTask.updated }}
+          · 跳过 {{ importTask.skipped }} · 失败 {{ importTask.failed }}
+        </div>
+        <div class="import-logs">
+          <div v-for="(lg, i) in importTask.logs" :key="i" class="import-log-line">{{ lg }}</div>
+          <div v-if="!importTask.logs.length" class="import-log-empty">准备中…</div>
+        </div>
+        <el-alert
+          v-if="importTask.error"
+          type="error"
+          :title="importTask.error"
+          :closable="false"
+          style="margin-top: 8px"
+        />
+      </div>
+      <template #footer>
+        <el-button v-if="importTask?.status !== 'running'" @click="importDialog = false">关闭</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, onMounted } from "vue";
+import { ref, computed, watch, onMounted, onUnmounted } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
-import { Filter, Search, ArrowDown, ArrowUp, ArrowRight } from "@element-plus/icons-vue";
+import { Filter, Search, ArrowDown, ArrowUp, ArrowRight, Delete, OfficeBuilding } from "@element-plus/icons-vue";
 import dayjs from "dayjs";
 import * as XLSX from "xlsx";
 import api from "@/api";
@@ -254,6 +325,12 @@ const props = defineProps<{
   searchFields?: SearchFieldDef[];
   /** 外部控制的关键词(如重置时清空搜索框); 传入时内部搜索框同步该值 */
   keyword?: string;
+  /** 是否显示操作列(默认 true; 前台展示模式可传 false 隐藏整个操作列) */
+  showActions?: boolean;
+  /** 是否启用批量选择与批量操作(默认 false) */
+  selectable?: boolean;
+  /** 是否显示「批量改部门」(仅 person/project 等有部门列的实体开启) */
+  canBatchDept?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -444,7 +521,7 @@ async function loadColumnOptionSets() {
     } catch { /* 忽略不可用的选项集 */ }
   }
 }
-const hasActions = computed(() => !!useSlots().actions);
+const hasActions = computed(() => props.showActions !== false && !!useSlots().actions);
 
 // 动态列加载完成后重建筛选字段(visibleColumns 变化), 配置变化也重建
 // visibleColumns 已在本块上方声明, 此处访问不再 TDZ; immediate:false 避免 setup 期立即求值
@@ -454,6 +531,7 @@ watch(
   { deep: true, immediate: false }
 );
 onMounted(() => { buildSearchFields(); loadColumnOptionSets(); });
+onUnmounted(() => stopImportPoll());
 
 function getOptionLabel(options: any[], val: any): string {
   // val 可能是枚举值或中文标签(取决于 getCellValue 是否已转换)
@@ -497,7 +575,7 @@ function formatDateTime(val: string): string {
 async function handleExport() {
   const token = localStorage.getItem("ssm_token");
   try {
-    const resp = await fetch(`/api/v1/excel/export/${props.entityType}`, {
+    const resp = await fetch(`/api/v1/excel/export/${apiPath(props.entityType)}`, {
       method: "POST",
       headers: { Authorization: `Bearer ${token}` },
     });
@@ -518,6 +596,127 @@ function triggerImport() {
   fileInput.value?.click();
 }
 
+/* ─────────── 导入后台任务(大文件: 提交后轮询进度) ─────────── */
+const importDialog = ref(false);
+const importTask = ref<any>(null);
+let importPollTimer: any = null;
+
+const importPercent = computed(() => {
+  const t = importTask.value;
+  if (!t) return 0;
+  if (t.status === "done" || t.status === "failed") return 100;
+  // running: 按日志条数估算(最多 95, 留 5% 给收尾)
+  const logs = t.logs?.length || 0;
+  return Math.min(95, Math.max(5, logs));
+});
+
+function refreshAfterImport() {
+  emit("pageChange", { page: currentPage, pageSize: pageSize });
+}
+
+/* ─────────── 批量操作(批量删除 / 批量改部门) ─────────── */
+/** entityType → 删除/更新 API 路径(部分实体列表 entityType 与接口路径不一致) */
+function apiPath(et: string): string {
+  return ({ company: "companies", web_clue: "web-clues" } as Record<string, string>)[et] || et;
+}
+
+const selectedRows = ref<any[]>([]);
+const batchDeleting = ref(false);
+const batchDeptDialog = ref(false);
+const batchDeptLoading = ref(false);
+const batchDeptId = ref<number | null>(null);
+const departments = ref<any[]>([]);
+
+function onSelectionChange(rows: any[]) {
+  selectedRows.value = rows;
+}
+
+async function batchDelete() {
+  const rows = selectedRows.value;
+  if (!rows.length) return;
+  try {
+    await ElMessageBox.confirm(
+      `确定删除选中的 ${rows.length} 条记录? 此操作不可恢复。`,
+      "批量删除",
+      { type: "warning", confirmButtonText: "删除", cancelButtonText: "取消" },
+    );
+  } catch { return; }
+  batchDeleting.value = true;
+  let ok = 0, fail = 0;
+  for (const row of rows) {
+    try {
+      await api.delete(`/${apiPath(props.entityType)}/${row.id}`);
+      ok++;
+    } catch { fail++; }
+  }
+  batchDeleting.value = false;
+  ElMessage.success(`批量删除完成: 成功 ${ok} 条, 失败 ${fail} 条`);
+  refreshAfterImport();
+}
+
+async function openBatchDept() {
+  if (!departments.value.length) {
+    try {
+      const res: any = await api.get("/rbac/departments");
+      departments.value = res?.data || [];
+    } catch { /* 部门加载失败不阻塞 */ }
+  }
+  batchDeptId.value = null;
+  batchDeptDialog.value = true;
+}
+
+async function submitBatchDept() {
+  if (!batchDeptId.value) return ElMessage.warning("请选择目标部门");
+  const rows = selectedRows.value;
+  batchDeptLoading.value = true;
+  let ok = 0, fail = 0;
+  for (const row of rows) {
+    try {
+      await api.put(`/${apiPath(props.entityType)}/${row.id}`, { department_id: batchDeptId.value });
+      ok++;
+    } catch { fail++; }
+  }
+  batchDeptLoading.value = false;
+  batchDeptDialog.value = false;
+  ElMessage.success(`批量改部门完成: 成功 ${ok} 条, 失败 ${fail} 条`);
+  refreshAfterImport();
+}
+
+function stopImportPoll() {
+  if (importPollTimer) {
+    clearInterval(importPollTimer);
+    importPollTimer = null;
+  }
+}
+
+async function pollImportTask(taskId: string) {
+  stopImportPoll();
+  const tick = async () => {
+    try {
+      const res: any = await api.get(`/excel/import/task/${taskId}`);
+      const t = res?.data;
+      if (!t) return;
+      importTask.value = t;
+      if (t.status === "done") {
+        stopImportPoll();
+        const d = t.result || {};
+        ElMessage.success(d?.message || "导入完成");
+        refreshAfterImport();
+      } else if (t.status === "failed") {
+        stopImportPoll();
+        ElMessage.error(t.error || "导入失败");
+      }
+    } catch {
+      stopImportPoll();
+      ElMessage.error("获取导入进度失败");
+    }
+  };
+  await tick();
+  if (importTask.value?.status === "running") {
+    importPollTimer = setInterval(tick, 1500);
+  }
+}
+
 async function handleFileUpload(e: Event) {
   const input = e.target as HTMLInputElement;
   const file = input.files?.[0];
@@ -530,15 +729,39 @@ async function handleFileUpload(e: Event) {
     const isSpecial = props.entityType === "projects" || props.entityType === "persons";
     const url = isSpecial
       ? `/${props.entityType}/import-real`
-      : `/excel/import/${props.entityType}`;
+      : `/excel/import/${apiPath(props.entityType)}`;
+
+    // 项目导入: 让用户选择「快速导入(跳过 AI 补全)」或「深度补全(慢)」
+    if (isSpecial && props.entityType === "projects") {
+      try {
+        await ElMessageBox.confirm(
+          "选择导入模式：\n\n「快速导入」跳过 AI 分类与单位信息补全，只入库源数据并建图谱（大文件推荐，快）。\n「深度补全」会逐单位调用 AI/企查查补全法人/电话/地址（慢）。",
+          "项目导入模式",
+          { confirmButtonText: "快速导入", cancelButtonText: "深度补全", type: "info" }
+        );
+        formData.append("deep_enrich", "false");
+      } catch {
+        formData.append("deep_enrich", "true");
+      }
+    }
     const res: any = await api.post(url, formData, {
       headers: { "Content-Type": "multipart/form-data" },
     });
+    // 后台任务: 打开进度弹窗并轮询
+    if (res?.task_id) {
+      importTask.value = {
+        status: "running", stage: "已提交, 等待后台解析…",
+        imported: 0, updated: 0, skipped: 0, failed: 0, logs: [],
+      };
+      importDialog.value = true;
+      pollImportTask(res.task_id);
+      return;
+    }
+    // 通用同步导入(companies 等)
     const d = (res && res.data) ? res.data : res;
-    const msg = isSpecial
-      ? (d?.message || "导入完成")
-      : `导入完成: 成功 ${d.imported || 0} 条, 失败 ${d.failed || 0} 条`;
+    const msg = `导入完成: 成功 ${d.imported || 0} 条, 失败 ${d.failed || 0} 条`;
     ElMessage.success(msg);
+    refreshAfterImport();
   } catch {
     ElMessage.error("导入失败");
   } finally {
@@ -550,6 +773,53 @@ import { useSlots } from "vue";
 </script>
 
 <style scoped>
+/* 导入进度弹窗 */
+.import-stage {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  font-size: 13.5px;
+  color: var(--ssm-text-main, #1f2d3d);
+  font-weight: 500;
+}
+.import-spin {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 2px solid rgba(165, 28, 48, 0.18);
+  border-top-color: #a51c30;
+  animation: import-rotate 0.8s linear infinite;
+}
+@keyframes import-rotate {
+  to { transform: rotate(360deg); }
+}
+.import-stats {
+  margin: 8px 0;
+  font-size: 12.5px;
+  color: #606266;
+}
+.import-logs {
+  max-height: 220px;
+  overflow-y: auto;
+  background: #f7f9fc;
+  border: 1px solid #edf1f7;
+  border-radius: 8px;
+  padding: 8px 10px;
+  margin-top: 6px;
+}
+.import-log-line {
+  font-size: 12px;
+  line-height: 1.7;
+  color: #4a5568;
+  word-break: break-all;
+}
+.import-log-empty {
+  font-size: 12px;
+  color: #a0a8b8;
+  text-align: center;
+  padding: 12px 0;
+}
 .dynamic-table {
   background: #fff;
   border: 1px solid var(--ssm-border, #e9edf6);

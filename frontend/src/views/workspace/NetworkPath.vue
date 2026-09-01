@@ -167,16 +167,17 @@
 
 <script setup lang="ts">
 import { ref, onMounted, watch } from "vue";
-import { useRoute, useRouter } from "vue-router";
+import { useRoute } from "vue-router";
 import {
   OfficeBuilding, FolderOpened, Right, Loading,
   Briefcase, CollectionTag, CircleCheck, MagicStick,
 } from "@element-plus/icons-vue";
 import api from "@/api";
 import AiAnalystChat from "@/components/AiAnalystChat.vue";
+import { useNavBase } from "@/utils/navBase";
 
 const route = useRoute();
-const router = useRouter();
+const { navToNewTab } = useNavBase();
 const targetPersonId = ref(Number(route.params.id));
 
 const me = ref<any>({});
@@ -223,7 +224,7 @@ function nodeTypeLabel(t: string): string {
 function goNode(type: "person" | "company" | "project", id: any) {
   const pid = Number(id);
   if (!Number.isFinite(pid) || pid <= 0) return;
-  router.push(`/workspace/${type}s/${pid}`);
+  navToNewTab(`/${type}s/${pid}`);
 }
 function nodeTagType(t: string): string {
   const m: Record<string, string> = { Person: "primary", Company: "success", Project: "warning" };

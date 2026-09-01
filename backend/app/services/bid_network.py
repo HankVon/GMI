@@ -11,6 +11,7 @@
 说明: 匹配采用名称完整/核心名双向判断, 未匹配的公司不建节点(避免污染图谱)。
 """
 import datetime
+import html as _html
 import json
 import logging
 import re
@@ -24,11 +25,15 @@ from app.models.company import Company
 from app.models.bid_notice import BidNotice
 from app.services.neo4j_sync import _run, _get_driver
 from app.services.china_regions import extract_target_province, is_target_province, TARGET_PROVINCES
+from app.services.notice_classify import classify_notice_type
 
 logger = logging.getLogger("bid_network")
 
-# 中标公告标题特征
-_BID_TITLE_PATTERN = re.compile(r"中标|成交|结果公告|评审结果")
+# 中标公告标题特征(放宽: 同时纳管 招标/变更/终止/废标 等公告, 由 classify_notice_type 细分类型)
+_BID_TITLE_PATTERN = re.compile(
+    r"中标|成交|结果公告|评审结果|招标|采购公告|竞争性磋商|竞争性谈判|询价|"
+    r"单一来源|资格预审|变更|更正|终止|中止|废标|流标|采购意向"
+)
 # 供应商字段里常有的前缀/后缀噪音
 _SUPPLIER_NOISE = (
     "牵头供应商", "投标联合体", "中标供应商", "成交供应商", "预中标人",
@@ -53,6 +58,39 @@ def _clue_meta(clue: WebClue) -> dict:
         except Exception:
             return {}
     return {}
+
+
+_BODY_NOISE = (
+    "唯一指定政府采购信息网络发布媒体",
+    "国家级政府采购专业网站",
+    "服务热线：",
+    "服务投诉：",
+    "当前位置：",
+    "【打印】",
+    "首页",
+    "政采法规",
+    "购买服务",
+    "监督检查",
+    "信息公告",
+    "国际专栏",
+    "政采公告",
+    "地方公告",
+    "来源：",
+)
+
+
+def _html_to_text(html: str) -> str:
+    """把公告页 HTML 转为可读纯文本(去脚本/样式/标签/实体/站点导航噪音, 压缩空行)。"""
+    if not html:
+        return ""
+    text = re.sub(r"(?is)<script.*?</script>|<style.*?</style>", "", html)
+    text = re.sub(r"<br\s*/?>", "\n", text)
+    text = re.sub(r"</(p|div|tr|li|h[1-6]|table|section)>", "\n", text)
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = _html.unescape(text)
+    lines = [ln.strip() for ln in text.splitlines()]
+    lines = [ln for ln in lines if ln and not any(k in ln for k in _BODY_NOISE)]
+    return "\n".join(lines)
 
 
 def _clean_supplier(raw: str) -> str:
@@ -166,7 +204,11 @@ def parse_bid_clues(db: Session, max_age_days: int = 730) -> dict:
         purchaser = (meta.get("purchaser") or "").strip()
         # 全国站: purchaser; 四川站: 公告详情 meta 里 purchaser 也有
         region = (meta.get("region") or "").strip()
-        notice_type = (meta.get("notice_type") or "").strip() or "中标（成交）公告"
+        # notice_type: 以标题分类为准(爬虫/历史数据可能只写了占位「中标（成交）公告」)
+        _meta_nt = (meta.get("notice_type") or "").strip()
+        if _meta_nt in ("", "中标（成交）公告"):
+            _meta_nt = ""
+        notice_type = classify_notice_type(clue.title or "") or _meta_nt or "中标（成交）公告"
         published_raw = (meta.get("published_at") or "").strip()
         published = None
         if published_raw:
@@ -250,7 +292,30 @@ def parse_bid_clues(db: Session, max_age_days: int = 730) -> dict:
         bn.agency = agency or None
         bn.source_name = clue.source_name or ""
         bn.published_at = published
-        bn.meta = {"suppliers": suppliers}
+        bn.meta = {
+            "suppliers": suppliers,
+            "summary": meta.get("summary") or "",
+            "industry": meta.get("industry") or "",
+            "keywords": meta.get("keywords") or [],
+            # 正文优先取 web_clue.content 列(采集到的公告 HTML), meta 里的 content/body 仅作兼容
+            "body": meta.get("body") or meta.get("content") or _html_to_text(clue.content or ""),
+            "project_info": meta.get("project_info") or meta.get("projectInfo") or {},
+            "timeline": meta.get("timeline") or meta.get("dates") or [],
+            "finance": meta.get("finance") or {},
+            "evaluation": meta.get("evaluation") or {},
+            "requirements": meta.get("requirements") or meta.get("qualification") or {},
+            "attachments": meta.get("attachments") or [],
+        }
+        # 线索解析中标公告时, 若线索本身未带附件, 按来源记录缺口(强/弱信号区分)
+        if not bn.meta.get("attachments"):
+            from app.services.attachment_monitor import log_gap
+            body = meta.get("body") or meta.get("content") or clue.content or ""
+            bn.meta["attachment_gap"] = log_gap(
+                source=clue.source_name or "",
+                url=clue.url or "",
+                reason="no_detail" if not body else "empty_fjxx",
+                title=clue.title or "",
+            )
         if purchaser_comp:
             matched_purchaser += 1
         for sp in suppliers:

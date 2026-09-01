@@ -1,25 +1,31 @@
 <!-- 公司/单位列表页 -->
 <template>
   <div class="list-page">
-    <h2 class="page-title">单位管理</h2>
+    <div class="page-head">
+      <span class="eyebrow">ORGANIZATION DIRECTORY</span>
+      <h2 class="page-title">单位管理</h2>
+      <p class="page-desc">汇聚业主、竞对、合作方与潜在客户的全量单位档案，支撑公关路径与情报关联分析。</p>
+    </div>
     <DynamicTable
       entity-type="company"
     :data="list"
     :columns="columns"
     :loading="loading"
     :total="total"
-    :can-export="true"
-    :can-import="true"
+    :can-export="!isPortal"
+    :can-import="!isPortal"
+    :show-actions="!isPortal"
+    :selectable="!isPortal"
     :filters="filters"
     :search-fields="searchFields"
     @search="handleSearch"
     @sort-change="handleSort"
     @filter-change="handleFilter"
-    @row-click="(row: any) => $router.push(`/workspace/companies/${row.id}`)"
+    @row-click="goDetail"
     @page-change="handlePage"
   >
     <template #actions="{ row }">
-      <el-popconfirm title="确定删除？" @confirm="handleDelete(row.id)">
+      <el-popconfirm v-if="!isPortal" title="确定删除？" @confirm="handleDelete(row.id)">
         <template #reference>
           <el-button text type="danger" size="small" @click.stop>删除</el-button>
         </template>
@@ -30,10 +36,21 @@
 </template>
 
 <script setup lang="ts">
+defineOptions({ name: "CompanyList" });
 import { ref, onMounted } from "vue";
+import { useRouter } from "vue-router";
 import { ElMessage } from "element-plus";
 import api from "@/api";
 import DynamicTable from "@/components/DynamicTable.vue";
+import { useNavBase } from "@/utils/navBase";
+import { usePortalMode } from "@/utils/portalMode";
+
+const router = useRouter();
+const { navTo } = useNavBase();
+const { isPortal } = usePortalMode();
+function goDetail(row: any) {
+  router.push(navTo(`/companies/${row.id}`));
+}
 
 const list = ref<any[]>([]);
 const total = ref(0);
@@ -140,3 +157,34 @@ async function handleDelete(id: number) {
 
 onMounted(loadData);
 </script>
+
+<style scoped>
+.page-head {
+  margin-bottom: 16px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--ssm-hairline);
+}
+.eyebrow {
+  display: block;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: var(--ssm-eyebrow-spacing);
+  text-transform: uppercase;
+  color: var(--ssm-eyebrow);
+  margin-bottom: 6px;
+}
+.page-title {
+  margin: 0;
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--ssm-text-main);
+  letter-spacing: 0.01em;
+}
+.page-desc {
+  margin: 8px 0 0;
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--ssm-text-secondary);
+  max-width: 720px;
+}
+</style>

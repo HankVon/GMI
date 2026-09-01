@@ -39,6 +39,8 @@ RELATION_NAMES_ZH = {
     "PARTICIPATES_IN": "参与",
     "COLLABORATED_WITH": "合作过",
     "COLLEAGUE": "同事",
+    "RESPONSIBLE_FOR": "负责",
+    "GRANTED_ACCESS": "被授权查看",
 }
 
 _Driver = None
@@ -486,5 +488,99 @@ def _entity_label_key(entity_type: str) -> tuple:
         "company": ("Company", "company_id"),
         "person": ("Person", "person_id"),
         "project": ("Project", "project_id"),
+        "bid": ("Bid", "bid_id"),
+        "intent": ("Intent", "intent_id"),
     }
     return mapping.get(entity_type, ("", ""))
+
+
+def sync_intent(intent_id: int, title: str, region: str = "", amount_wan: float | None = None,
+                dept: str = "", status: str = "new") -> None:
+    """把意向作为独立节点写入 Neo4j(幂等)。
+
+    (Intent {intent_id}) 节点, 供「意向专属子图」查询: 意向为中心节点,
+    通过 RELATES_TO 边连接已匹配的单位/人员, 形成可交互的意向关系图谱。
+    """
+    if not intent_id:
+        return
+    _run(
+        """
+        MERGE (i:Intent {intent_id: $intent_id})
+        SET i.title = $title,
+            i.region = $region,
+            i.amount_wan = $amount_wan,
+            i.dept = $dept,
+            i.status = $status,
+            i.updated_at = datetime()
+        """,
+        intent_id=intent_id, title=(title or "")[:200], region=region or "",
+        amount_wan=amount_wan, dept=(dept or "")[:100], status=status or "new",
+    )
+
+
+def sync_user_data_scope(user_id: int, person_id: int | None,
+                         scope: dict | None = None,
+                         grants: list[dict] | None = None,
+                         grant_type: str = "view") -> None:
+    """分发权限后同步知识图谱 — 用户(实名人员)的数据范围位置与关联。
+
+    匿名账号(person_id 为空)不锚定图谱, 直接跳过(MySQL 数据过滤照常生效)。
+
+    scope: 生效数据范围 {rule, dept_ids, grants}; 用于更新 Person 节点属性。
+    grants: 对象级授权列表 [{entity_type, entity_id, grant_type, expire_at}],
+            仅当图谱存在对应实体节点时建立授权边(省略则只更新属性)。
+    grant_type: 仅作默认值兼容; 实际类型取自 grants 中每条的 grant_type。
+    """
+    if not person_id:
+        return
+
+    # 1. 锚定 Person 节点 + 更新数据范围属性(实名用户在图谱中的位置)
+    rule = (scope or {}).get("rule") or ""
+    dept_ids = list((scope or {}).get("dept_ids") or [])
+    _run(
+        """
+        MERGE (p:Person {person_id: $person_id})
+        SET p.is_account = true,
+            p.user_id = $user_id,
+            p.data_scope_rule = CASE WHEN $rule <> '' THEN $rule END,
+            p.scope_dept_ids = $dept_ids,
+            p.updated_at = datetime()
+        """,
+        person_id=person_id, user_id=user_id, rule=rule, dept_ids=dept_ids,
+    )
+
+    # 2. 清理旧授权边(全量重建, 幂等): 撤销/改范围后不留残留
+    _run(
+        """
+        MATCH (p:Person {person_id: $person_id})-[r:RESPONSIBLE_FOR|GRANTED_ACCESS]->()
+        DELETE r
+        """,
+        person_id=person_id,
+    )
+
+    # 3. 重建对象级授权边
+    for g in grants or []:
+        label, key = _entity_label_key((g or {}).get("entity_type") or "")
+        if not label:
+            continue
+        rel = "RESPONSIBLE_FOR" if (g.get("grant_type") == "own") else "GRANTED_ACCESS"
+        rel_zh = RELATION_NAMES_ZH.get(rel, rel)
+        expire_at = g.get("expire_at")
+        try:
+            entity_id = int(g.get("entity_id"))
+        except (TypeError, ValueError):
+            continue
+        _run(
+            f"""
+            MATCH (p:Person {{person_id: $person_id}})
+            MATCH (e:{label} {{{key}: $entity_id}})
+            MERGE (p)-[r:{rel}]->(e)
+            SET r.name_zh = $rel_zh,
+                r.granted_by = $granted_by,
+                r.expire_at = $expire_at,
+                r.updated_at = datetime()
+            """,
+            person_id=person_id, entity_id=entity_id,
+            rel_zh=rel_zh, granted_by=g.get("granted_by"),
+            expire_at=expire_at.isoformat() if expire_at else None,
+        )

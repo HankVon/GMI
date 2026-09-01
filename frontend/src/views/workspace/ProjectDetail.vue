@@ -4,9 +4,10 @@
 -->
 <template>
   <div class="project-detail">
-    <el-page-header @back="$router.back()" title="返回列表">
+    <el-page-header @back="goBack" title="返回列表">
       <template #content>
           <span>{{ project.name || "加载中..." }}</span>
+          <FavoriteButton entity-type="project" :entity-id="projectId" />
         </template>
       </el-page-header>
 
@@ -19,10 +20,16 @@
           <el-tag :type="statusTagType(project.status)" effect="dark" size="small">
             {{ statusLabel(project.status) }}
           </el-tag>
+          <el-tag v-if="project.ext_attrs?.category" type="warning" effect="light" size="small">
+            {{ project.ext_attrs.category }}
+          </el-tag>
+          <el-tag v-if="projectRegion" type="info" effect="plain" size="small">
+            {{ projectRegion }}
+          </el-tag>
           <div class="fgbs-head-spacer" />
-          <!-- <el-button v-if="!editing" type="primary" size="small" class="fgbs-print" @click="startEdit">
-            <el-icon><Edit /></el-icon><span>编辑项目</span>
-          </el-button> -->
+          <span v-if="project.created_at" class="fgbs-pub-time">
+            <el-icon><Clock /></el-icon>数据入库 {{ formatDate(project.created_at) }}
+          </span>
         </div>
 
         <!-- 三张信息小卡: 项目编号 / 负责人 / 起止日期 -->
@@ -56,19 +63,45 @@
               <div class="fgbs-info-value">{{ formatDate(project.start_date) }} → {{ formatDate(project.end_date) }}</div>
             </div>
           </div>
+          <div class="fgbs-info-card">
+            <div class="fgbs-info-icon"><el-icon><Money /></el-icon></div>
+            <div class="fgbs-info-body">
+              <div class="fgbs-info-label">预算金额</div>
+              <div class="fgbs-info-value fgbs-amount-value">{{ projectAmountText }}</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 关键时间节点(对标标讯详情页: 启动/进展/结束) -->
+      <div class="fgbs-timeline-card">
+        <div class="fgbs-timeline-head">
+          <span class="fgbs-timeline-title"><el-icon><Calendar /></el-icon>关键时间节点</span>
+          <span class="fgbs-timeline-sub">项目生命周期关键时间</span>
+        </div>
+        <div class="fgbs-timeline-nodes">
+          <div class="fgbs-tnode">
+            <div class="fgbs-tnode-dot start"></div>
+            <div class="fgbs-tnode-label">项目启动</div>
+            <div class="fgbs-tnode-date">{{ formatDate(project.start_date) || "-" }}</div>
+          </div>
+          <div class="fgbs-tnode-line"></div>
+          <div class="fgbs-tnode">
+            <div class="fgbs-tnode-dot mid"></div>
+            <div class="fgbs-tnode-label">最近进展</div>
+            <div class="fgbs-tnode-date">{{ lastProgressDate }}</div>
+          </div>
+          <div class="fgbs-tnode-line"></div>
+          <div class="fgbs-tnode">
+            <div class="fgbs-tnode-dot end"></div>
+            <div class="fgbs-tnode-label">预计结束</div>
+            <div class="fgbs-tnode-date">{{ formatDate(project.end_date) || "-" }}</div>
+          </div>
         </div>
       </div>
 
       <!-- AI分析能力横幅 -->
-      <div class="ai-banner">
-        <div class="ai-banner-left">
-          <span class="ai-banner-label"><el-icon><MagicStick /></el-icon><b>AI分析:</b></span>
-          <span v-for="(c, i) in AI_CHIPS" :key="i" class="ai-chip" @click="openAiChat(c)">{{ c }}</span>
-        </div>
-        <el-link type="primary" :underline="false" class="ai-more" @click="openAiChat()">
-          更多分析 <el-icon><ArrowRight /></el-icon>
-        </el-link>
-      </div>
+      <AiBanner :chips="AI_CHIPS" @select-chip="openAiChat" @more="openAiChat()" />
 
       <!-- 统计卡片 -->
       <div class="fgbs-stats">
@@ -90,15 +123,33 @@
         </div>
       </div>
 
+    <!-- 相关标讯(对标建设通标讯详情: 关联公告) -->
+    <el-card v-if="relatedBids.length" class="related-bid-card" shadow="never">
+      <template #header>
+        <div class="section-header">
+          <span class="section-title">相关标讯</span>
+          <span class="section-sub">按项目名称关联的招投标公告（来源公开渠道）</span>
+        </div>
+      </template>
+      <div v-for="b in relatedBids" :key="b.id" class="related-bid-item">
+        <el-tag size="small" :type="String(b.notice_type || '').includes('中标') ? 'success' : 'primary'">
+          {{ b.notice_type || "标讯" }}
+        </el-tag>
+        <a v-if="b.url" :href="b.url" target="_blank" rel="noopener" class="related-bid-title">{{ b.title }}</a>
+        <span v-else class="related-bid-title">{{ b.title }}</span>
+        <span class="related-bid-meta">{{ b.region || "全国" }} · {{ b.published_at }}</span>
+      </div>
+    </el-card>
+
     <el-row :gutter="16" style="margin-top: 16px">
       <!-- 左侧：进展 + 介绍 + 变更历史 -->
-      <el-col :span="16">
+      <el-col :span="16" class="detail-main-col">
         <!-- 项目进展 -->
         <el-card class="section-card" shadow="never">
           <template #header>
             <div class="section-header">
               <span class="section-title">项目进展</span>
-              <el-button type="primary" size="small" @click="openProgressDialog(null)">
+              <el-button v-if="!isPortal" type="primary" size="small" @click="openProgressDialog(null)">
                 添加进展
               </el-button>
             </div>
@@ -116,7 +167,7 @@
                   <el-tag :type="stageTagType(node.title)" effect="light" round size="small">
                     {{ node.title }}
                   </el-tag>
-                  <div class="progress-ops">
+                  <div v-if="!isPortal" class="progress-ops">
                     <el-button link type="primary" size="small" @click="openProgressDialog(node)">编辑</el-button>
                     <el-button link type="danger" size="small" @click="deleteProgress(node)">删除</el-button>
                   </div>
@@ -133,10 +184,10 @@
           <template #header>
             <div class="section-header">
               <span class="section-title">项目介绍</span>
-              <div v-if="!editing" class="header-actions">
+              <div v-if="!editing && !isPortal" class="header-actions">
                 <el-button type="primary" size="small" @click="startEdit">编辑</el-button>
               </div>
-              <div v-else class="header-actions">
+              <div v-else-if="editing" class="header-actions">
                 <el-button size="small" @click="cancelEdit">取消</el-button>
                 <el-button type="primary" size="small" :loading="saving" @click="saveEdit">
                   保存
@@ -313,12 +364,12 @@
       </el-col>
 
       <!-- 右侧：参与公司（由参与成员反推）+ 成员 -->
-      <el-col :span="8">
+      <el-col :span="8" class="detail-side-col">
         <el-card shadow="never">
           <template #header>
             <div class="section-header">
               <span class="section-title">参与公司与成员</span>
-              <el-button type="primary" size="small" @click="showAddMember = true">
+              <el-button v-if="!isPortal" type="primary" size="small" @click="showAddMember = true">
                 添加成员
               </el-button>
             </div>
@@ -401,7 +452,7 @@
                     </div>
                   </div>
                   <div class="member-actions">
-                    <el-link type="primary" :underline="false" class="member-relation-link" @click.stop="openEditMember(m)">编辑</el-link>
+                    <el-link v-if="!isPortal" type="primary" :underline="false" class="member-relation-link" @click.stop="openEditMember(m)">编辑</el-link>
                     <el-link type="primary" :underline="false" class="member-relation-link" @click.stop="goNetwork(m.person_id)">查看人脉</el-link>
                   </div>
                 </div>
@@ -468,10 +519,10 @@
           <span class="section-title">项目情报与人脉</span>
           <span class="section-sub">围绕本项目聚合行业动态(区分发布时间/抓取时间) + 相似项目触达网络</span>
           <div class="header-actions">
-            <el-button size="small" :loading="ctxLoading" @click="loadProjectContext">
+            <el-button v-if="!isPortal" size="small" :loading="ctxLoading" @click="loadProjectContext">
               <el-icon><Refresh /></el-icon>刷新
             </el-button>
-            <el-link type="primary" :underline="false" class="rel-more" @click="router.push('/workspace/intelligence')">
+            <el-link type="primary" :underline="false" class="rel-more" @click="router.push(navTo('/intelligence?tab=advanced'))">
               去行业情报 <el-icon><ArrowRight /></el-icon>
             </el-link>
           </div>
@@ -639,10 +690,10 @@
         <el-tab-pane label="跟踪情报" name="tracked">
           <div class="ctx-toolbar">
             <span class="ctx-hint">系统自动把意向/招标/中标/施工线索归整到本项目(地域+类别+单位强匹配, 防张冠李戴), 随采集自动累积</span>
-            <el-button size="small" :loading="trackedLoading" @click="loadTracked">
+            <el-button v-if="!isPortal" size="small" :loading="trackedLoading" @click="loadTracked">
               <el-icon><Refresh /></el-icon>刷新
             </el-button>
-            <el-button size="small" type="primary" plain :loading="trackedRunning" @click="runTracker">
+            <el-button v-if="!isPortal" size="small" type="primary" plain :loading="trackedRunning" @click="runTracker">
               <el-icon><VideoPlay /></el-icon>立即匹配新线索
             </el-button>
           </div>
@@ -671,6 +722,17 @@
                         {{ Math.round(row.confidence * 100) }}%
                       </el-tag>
                     </el-tooltip>
+                  </template>
+                </el-table-column>
+                <el-table-column label="状态" width="110" align="center">
+                  <template #default="{ row }">
+                    <el-button
+                      v-if="!row.is_read && row.id"
+                      size="small" type="primary" link
+                      :loading="readLoading[row.id]"
+                      @click.stop="markClueRead(row)"
+                    >标记已读</el-button>
+                    <el-tag v-else-if="row.is_read" size="small" type="info" effect="plain">已读</el-tag>
                   </template>
                 </el-table-column>
               </el-table>
@@ -802,20 +864,27 @@
 </template>
 
 <script setup lang="ts">
+defineOptions({ name: "ProjectDetail" });
 import { ref, onMounted, computed } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
 import {
   Document, User, Calendar, MagicStick, ArrowRight, ArrowDown, ArrowUp, OfficeBuilding,
-  Refresh, Position, FolderOpened, UserFilled, VideoPlay,
+  Refresh, Position, FolderOpened, UserFilled, VideoPlay, Money, Clock,
 } from "@element-plus/icons-vue";
 import dayjs from "dayjs";
 import api from "@/api";
+import FavoriteButton from "@/components/FavoriteButton.vue";
 import DynamicForm from "@/components/DynamicForm.vue";
 import AiAnalystChat from "@/components/AiAnalystChat.vue";
+import AiBanner from "@/components/detail/AiBanner.vue";
+import { useNavBase } from "@/utils/navBase";
+import { usePortalMode } from "@/utils/portalMode";
 
 const route = useRoute();
 const router = useRouter();
+const { navTo } = useNavBase();
+const { isPortal } = usePortalMode();
 // 路由 id 可能来自图谱/人脉路径(偶为字符串), 兜底为合法整数, 避免请求 /projects/NaN
 const projectId = Number.isFinite(Number(route.params.id)) ? Number(route.params.id) : 0;
 
@@ -823,6 +892,25 @@ const project = ref<any>({});
 const manager = ref<any>({});
 const members = ref<any[]>([]);
 const dynamicFields = ref<any[]>([]);
+
+/* ─────────── 对标标讯详情页: 基本信息聚合字段 ─────────── */
+const projectRegion = computed(() => {
+  const ext = project.value?.ext_attrs || {};
+  const r = ext.region || ext.province || "";
+  const p = [ext.province, ext.city, ext.county].filter(Boolean).join("·");
+  return r || p || "-";
+});
+const projectAmountText = computed(() => {
+  const v = project.value?.amount ?? project.value?.ext_attrs?.amount;
+  const n = Number(v);
+  if (!isFinite(n)) return "-";
+  if (n >= 10000) return `¥${(n / 10000).toFixed(2)} 万元`;
+  return `¥${n.toLocaleString()}`;
+});
+const lastProgressDate = computed(() => {
+  const p = progressList.value[0];
+  return p ? formatDate(p.progress_date) : "-";
+});
 const editing = ref(false);
 const saving = ref(false);
 const showAddMember = ref(false);
@@ -1033,11 +1121,11 @@ function formatDate(d: string): string {
 }
 
 function goPerson(personId: number) {
-  if (personId) router.push(`/workspace/persons/${personId}`);
+  if (personId) router.push(navTo(`/persons/${personId}`));
 }
 
 function goNetwork(personId: number) {
-  if (personId) router.push(`/workspace/network/${personId}`);
+  if (personId) router.push(navTo(`/network/${personId}`));
 }
 
 // 顶部位置信息（优先从动态字段取）
@@ -1109,6 +1197,7 @@ async function loadProgress() {
 const ctxTab = ref<"intel" | "network" | "tracked">("intel");
 const ctxLoading = ref(false);
 const trackedGroups = ref<any[]>([]);
+const readLoading = ref<Record<number, boolean>>({});
 const trackedLoading = ref(false);
 const trackedRunning = ref(false);
 const intelItems = ref<any[]>([]);
@@ -1123,9 +1212,18 @@ const showMoreProjects = ref(false);
 const showMoreCompanies = ref(false);
 const showMorePersons = ref(false);
 
-function goCompany(id: number) { router.push(`/workspace/companies/${id}`); }
-function goProject(id: number) { router.push(`/workspace/projects/${id}`); }
+function goCompany(id: number) { router.push(navTo(`/companies/${id}`)); }
+function goProject(id: number) { router.push(navTo(`/projects/${id}`)); }
 function openUrl(url: string) { window.open(url, "_blank", "noopener"); }
+/** 返回: 优先回上一级浏览历史(用户刚看过的那一页), 无历史(如直接刷新)时兜底回数据中心列表 */
+function goBack() {
+  const back = window.history.state?.back;
+  if (back) {
+    router.back();
+  } else {
+    router.push("/site/data-center/projects");
+  }
+}
 
 function intelStageType(s: string) {
   return s === "investment" ? "success" : s === "bidding" ? "primary" : "warning";
@@ -1139,6 +1237,19 @@ async function loadTracked() {
     trackedGroups.value = res.groups || [];
   } catch { trackedGroups.value = []; }
   finally { trackedLoading.value = false; }
+}
+
+async function markClueRead(row: any) {
+  readLoading.value[row.id] = true;
+  try {
+    await api.post(`/projects/tracker/mark-read/${row.id}`);
+    row.is_read = true;
+    ElMessage.success("已标记为已读");
+  } catch {
+    ElMessage.error("操作失败");
+  } finally {
+    readLoading.value[row.id] = false;
+  }
 }
 
 /** 立即触发一次全量增量匹配(把新线索归整到各项目) */
@@ -1392,14 +1503,27 @@ async function loadProject() {
   // 非法/缺失的项目 id: 不发起 /projects/NaN 请求, 提示后回退列表
   if (!projectId) {
     ElMessage.error("无效的项目 ID");
-    router.push("/workspace/projects");
+    router.push(navTo("/projects"));
     return;
   }
   try {
     const res: any = await api.get(`/projects/${projectId}`);
     project.value = res;
     if (res.manager_id) await loadManager(res.manager_id);
+    loadRelatedBids();
   } catch { /* 跳回列表 */ }
+}
+
+/** 相关标讯: 按项目名关联公开招投标公告(对标建设通标讯详情「相似推荐/相关公告」) */
+const relatedBids = ref<any[]>([]);
+async function loadRelatedBids() {
+  try {
+    const kw = (project.value?.name || "").trim();
+    if (!kw) { relatedBids.value = []; return; }
+    const res: any = await api.get("/bids", { params: { keyword: kw.slice(0, 20), page_size: 8 } });
+    const core = kw.slice(0, 6);
+    relatedBids.value = (res?.items || []).filter((b: any) => b.title && b.title.includes(core));
+  } catch { relatedBids.value = []; }
 }
 
 async function loadManager(managerId: number) {
@@ -1462,8 +1586,9 @@ async function loadProjectCompanies() {
 
 // 项目单位角色中文名
 const COMPANY_ROLE_LABEL: Record<string, string> = {
-  owner: "业主", designer: "设计", supervisor: "监理",
-  constructor: "施工", partner: "合作伙伴",
+  owner: "业主", constructor: "施工", partner: "合作伙伴", builder: "建设单位",
+  design: "设计", designer: "设计", supervisor: "监理", construction: "施工",
+  investor: "投资方", client: "业主", contractor: "施工", supplier: "供应商", other: "其他",
 };
 function companyRoleLabel(role?: string) {
   if (!role) return "";
@@ -1610,7 +1735,15 @@ onMounted(() => {
 
 <style scoped>
 .project-detail {
-  max-width: 1400px;
+  width: 100%;
+}
+/* 窄屏时左右栏堆叠, 随设备自适应 */
+@media (max-width: 1100px) {
+  .detail-main-col,
+  .detail-side-col {
+    flex: 0 0 100% !important;
+    max-width: 100% !important;
+  }
 }
 .header-card {
   margin-top: 16px;
@@ -2063,11 +2196,69 @@ onMounted(() => {
 .fgbs-print { border-radius: 14px; }
 .fgbs-print :deep(.el-icon) { margin-right: 3px; }
 
-/* 三张信息小卡 */
+/* 四张信息小卡(对标标讯详情页基本信息) */
 .fgbs-info-cards {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(4, 1fr);
   gap: 14px;
+}
+.fgbs-amount-value { color: #2979ff; font-weight: 700; }
+.fgbs-pub-time {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: #909399;
+  flex-shrink: 0;
+}
+
+/* 关键时间节点(对标标讯详情页) */
+.fgbs-timeline-card {
+  margin-top: 14px;
+  background: #fff;
+  border: 1px solid #e9edf6;
+  border-radius: 8px;
+  padding: 14px 18px 18px;
+}
+.fgbs-timeline-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+.fgbs-timeline-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 15px;
+  font-weight: 600;
+  color: #1f2d3d;
+}
+.fgbs-timeline-sub { font-size: 12px; color: #909399; }
+.fgbs-timeline-nodes {
+  display: flex;
+  align-items: flex-start;
+}
+.fgbs-tnode { flex: 1; text-align: center; }
+.fgbs-tnode-dot {
+  width: 14px; height: 14px;
+  border-radius: 50%;
+  margin: 0 auto 8px;
+  border: 3px solid #fff;
+  box-shadow: 0 0 0 2px #2979ff;
+  background: #2979ff;
+}
+.fgbs-tnode-dot.start { background: #2f8f5b; box-shadow: 0 0 0 2px #2f8f5b; }
+.fgbs-tnode-dot.end { background: #b08d57; box-shadow: 0 0 0 2px #b08d57; }
+.fgbs-tnode-label { font-size: 12px; color: #909399; margin-bottom: 4px; }
+.fgbs-tnode-date { font-size: 14px; font-weight: 600; color: #1f2d3d; }
+.fgbs-tnode-line {
+  flex: 1;
+  height: 2px;
+  background: linear-gradient(90deg, #2979ff 0%, #2f8f5b 50%, #b08d57 100%);
+  margin-top: 6px;
+  border-radius: 2px;
+  min-width: 40px;
 }
 .fgbs-info-card {
   display: flex;
@@ -2106,56 +2297,6 @@ onMounted(() => {
 .fgbs-managers { display: flex; gap: 4px; flex-wrap: wrap; white-space: normal; }
 .fgbs-manager-tag { max-width: 120px; overflow: hidden; text-overflow: ellipsis; }
 
-/* AI分析能力横幅 */
-.ai-banner {
-  margin-top: 14px;
-  background: linear-gradient(90deg, #eef4ff 0%, #f7faff 100%);
-  border: 1px solid #dde7fa;
-  border-radius: 6px;
-  padding: 10px 16px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-.ai-banner-left {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 8px;
-  flex: 1;
-  min-width: 0;
-}
-.ai-banner-label {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  color: #2979ff;
-  font-size: 14px;
-  flex-shrink: 0;
-  margin-right: 4px;
-}
-.ai-banner-label :deep(.el-icon) { font-size: 14px; }
-.ai-banner-label b { font-weight: 700; }
-.ai-chip {
-  display: inline-block;
-  padding: 4px 12px;
-  border-radius: 14px;
-  background: #fff;
-  border: 1px solid #dde7fa;
-  color: #4b6cb7;
-  font-size: 12.5px;
-  cursor: pointer;
-  transition: all 0.18s ease;
-  user-select: none;
-}
-.ai-chip:hover {
-  background: #2979ff;
-  color: #fff;
-  border-color: #2979ff;
-}
-.ai-more { flex-shrink: 0; }
-
 /* 统计卡片条 */
 .fgbs-stats {
   margin-top: 14px;
@@ -2163,6 +2304,30 @@ onMounted(() => {
   grid-template-columns: repeat(4, 1fr);
   gap: 14px;
 }
+/* ─── 相关标讯(对标建设通标讯详情) ─── */
+.related-bid-card { margin-top: 14px; }
+.related-bid-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 4px;
+  border-bottom: 1px dashed #eef0f4;
+  flex-wrap: wrap;
+}
+.related-bid-item:last-child { border-bottom: none; }
+.related-bid-title {
+  color: #1f2d3d;
+  font-size: 14px;
+  text-decoration: none;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.related-bid-title:hover { color: #2979ff; }
+.related-bid-meta { font-size: 12px; color: #909399; flex-shrink: 0; }
+
 .fgbs-stat {
   background: #fff;
   border: 1px solid #e9edf6;
@@ -2184,8 +2349,13 @@ onMounted(() => {
 }
 
 @media (max-width: 900px) {
-  .fgbs-info-cards { grid-template-columns: 1fr; }
+  .fgbs-info-cards { grid-template-columns: 1fr 1fr; }
   .fgbs-stats { grid-template-columns: 1fr 1fr; }
+  .fgbs-timeline-nodes { flex-direction: column; gap: 14px; }
+  .fgbs-tnode-line { display: none; }
+}
+@media (max-width: 520px) {
+  .fgbs-info-cards { grid-template-columns: 1fr; }
 }
 
 /* ─── 项目情报与人脉 ─── */

@@ -57,3 +57,26 @@ env/
 
 # 代码评审快照产物
 ssm-code-review/
+
+# --- 2026-09-01 仓库整理补充 ---
+
+# Cloudflare 隧道运行时产物(由 cloudflared 进程重定向写入, 运行时被占用无法删除)
+cloudflared_run.out
+cloudflared_run.err
+
+# Agent / 编辑器工作目录(非项目文件)
+.archive-dev/
+.workbuddy/
+
+# 第三方源码副本: crawl4ai 上游源码(已于 2026-09-01 移除; 需要时从 git 历史取回)
+# 注意: crawl4ai-server/ 是自研服务, 不能忽略
+crawl4ai-main/
+
+# 用户上传文件(运行时数据, 各机不同, 绝不提交)
+uploads/
+
+# Cloudflare 隧道二进制(运行时下载, 绝不提交; .bat/.xml 等配置脚本除外)
+cloudflared.exe
+
+# 本地 Node.js 运行时副本(由 install_binary 注入, 非项目文件)
+.nodejs/

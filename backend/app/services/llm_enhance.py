@@ -28,9 +28,10 @@ class LLMUnavailable(Exception):
     """Ollama 不可用"""
 
 
-def _generate(prompt: str, system: str = "", timeout: float = 180.0) -> str:
-    """调用 Ollama generate, 返回文本。"""
-    payload = {"model": OLLAMA_MODEL, "prompt": prompt, "stream": False}
+def _generate(prompt: str, system: str = "", timeout: float = 180.0, model: str = "") -> str:
+    """调用 Ollama generate, 返回文本。model 为空用配置的默认模型。"""
+    use_model = model or OLLAMA_MODEL
+    payload = {"model": use_model, "prompt": prompt, "stream": False}
     if system:
         payload["system"] = system
     try:

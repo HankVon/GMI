@@ -1,7 +1,11 @@
 <!-- 数据看板 — 项目经营+人员投入+动态维度 -->
 <template>
   <div class="dashboard">
-    <h2 class="page-title">数据看板</h2>
+    <div class="page-head">
+      <span class="eyebrow">DATA DASHBOARD</span>
+      <h2 class="page-title">数据看板</h2>
+      <p class="page-desc">项目经营、人员投入与动态维度的实时经营视图，支撑管理决策与资源调度。</p>
+    </div>
 
     <!-- 筛选栏 -->
     <div class="filter-bar ssm-card">
@@ -163,7 +167,7 @@ const monthChartOption = computed(() => ({
   xAxis: { type: "category", data: (projectSummary.value.by_month || []).map((m: any) => m.month) },
   yAxis: { type: "value" },
   series: [
-    { name: "新建", type: "line", data: (projectSummary.value.by_month || []).map((m: any) => m.created), smooth: true, color: "#2979ff" },
+    { name: "新建", type: "line", data: (projectSummary.value.by_month || []).map((m: any) => m.created), smooth: true, color: "#a51c30" },
     { name: "完成", type: "line", data: (projectSummary.value.by_month || []).map((m: any) => m.completed), smooth: true, color: "#2bb673" },
   ],
 }));
@@ -172,7 +176,7 @@ const personChartOption = computed(() => ({
   tooltip: { trigger: "axis", axisPointer: { type: "shadow" } },
   yAxis: { type: "category", data: personData.value.map((p: any) => p.name).reverse(), axisLabel: { width: 80, overflow: "truncate" } },
   xAxis: { type: "value" },
-  series: [{ type: "bar", data: personData.value.map((p: any) => p.project_count).reverse(), color: "#2979ff", label: { show: true, position: "right" } }],
+  series: [{ type: "bar", data: personData.value.map((p: any) => p.project_count).reverse(), color: "#a51c30", label: { show: true, position: "right" } }],
   grid: { left: 100 },
 }));
 
@@ -188,9 +192,44 @@ onMounted(() => { refreshAll(); loadFilterableFields(); });
 
 <style scoped>
 .dashboard { padding: 8px; }
-.filter-bar { margin-bottom: 14px; padding: 16px; }
-.metric-row { margin: 0 0 14px; }
-.chart-row { margin: 0 0 14px; }
-.chart-card { padding: 18px 20px; }
-.chart-card-title { margin-bottom: 14px; }
+.page-head {
+  margin-bottom: 18px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--ssm-hairline);
+}
+.eyebrow {
+  display: block;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: var(--ssm-eyebrow-spacing);
+  text-transform: uppercase;
+  color: var(--ssm-eyebrow);
+  margin-bottom: 6px;
+}
+.page-title {
+  margin: 0;
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--ssm-text-main);
+  letter-spacing: 0.01em;
+}
+.page-desc {
+  margin: 8px 0 0;
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--ssm-text-secondary);
+  max-width: 720px;
+}
+.filter-bar { margin-bottom: 16px; padding: 16px; }
+.metric-row { margin: 0 0 16px; }
+.chart-row { margin: 0 0 16px; }
+.chart-card { padding: 18px 20px; border: 1px solid var(--ssm-border); border-radius: var(--ssm-radius); box-shadow: var(--ssm-shadow); }
+.chart-card-title {
+  margin-bottom: 14px;
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--ssm-text-main);
+  padding-left: 10px;
+  border-left: 3px solid var(--ssm-primary);
+}
 </style>

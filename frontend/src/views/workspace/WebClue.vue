@@ -9,16 +9,10 @@
         <el-button type="primary" @click="openManualDialog">
           <el-icon style="margin-right: 4px"><Link /></el-icon>手动抓取 URL
         </el-button>
-        <el-button @click="openSourceDialog()">
-          <el-icon style="margin-right: 4px"><Plus /></el-icon>新增来源
-        </el-button>
       </div>
     </div>
 
-    <el-tabs v-model="activeTab">
-      <!-- 线索列表 -->
-      <el-tab-pane label="线索列表" name="clues">
-        <div class="toolbar">
+    <div class="toolbar">
           <el-input
             v-model="query.keyword" placeholder="搜索标题/摘要" clearable style="width: 220px"
             @keyup.enter="loadClues" @clear="loadClues"
@@ -42,6 +36,9 @@
             type="danger" plain :disabled="!selectedClues.length" @click="batchRemoveClues"
           >
             批量删除 ({{ selectedClues.length }})
+          </el-button>
+          <el-button type="warning" plain :loading="exporting" @click="exportWebClues">
+            <el-icon style="margin-right: 4px"><Download /></el-icon>导出 Excel
           </el-button>
         </div>
 
@@ -123,42 +120,6 @@
             :current-page="query.page" @current-change="(p: number) => { query.page = p; loadClues(); }"
           />
         </div>
-      </el-tab-pane>
-
-      <!-- 来源站点 -->
-      <el-tab-pane label="来源站点" name="sources">
-        <el-table :data="sources" v-loading="sourceLoading" stripe style="width: 100%">
-          <el-table-column prop="name" label="来源名称" width="200" show-overflow-tooltip />
-          <el-table-column prop="url" label="URL" min-width="220" show-overflow-tooltip>
-            <template #default="{ row }">
-              <a :href="row.url" target="_blank" rel="noopener">{{ row.url }}</a>
-            </template>
-          </el-table-column>
-          <el-table-column prop="keywords" label="关键词" width="180" show-overflow-tooltip />
-          <el-table-column prop="regions" label="地域" width="140" show-overflow-tooltip />
-          <el-table-column prop="scrape_mode" label="模式" width="100">
-            <template #default="{ row }">
-              <el-tag size="small" :type="row.scrape_mode === 'query' ? 'warning' : 'primary'">
-                {{ modeLabel(row.scrape_mode) }}
-              </el-tag>
-            </template>
-          </el-table-column>
-          <el-table-column prop="enabled" label="启用" width="80">
-            <template #default="{ row }">
-              <el-switch :model-value="row.enabled" @change="(v: boolean) => toggleSource(row, v)" />
-            </template>
-          </el-table-column>
-          <el-table-column prop="last_run_result" label="上次抓取" min-width="180" show-overflow-tooltip />
-          <el-table-column label="操作" width="220" fixed="right">
-            <template #default="{ row }">
-              <el-button link type="primary" size="small" @click="crawlSource(row)">立即抓取</el-button>
-              <el-button link type="primary" size="small" @click="openSourceDialog(row)">编辑</el-button>
-              <el-button link type="danger" size="small" @click="removeSource(row)">删除</el-button>
-            </template>
-          </el-table-column>
-        </el-table>
-      </el-tab-pane>
-    </el-tabs>
 
     <!-- 手动抓取弹窗 -->
     <el-dialog v-model="showManual" title="手动抓取 URL（通过筛选才入库）" width="560px">
@@ -181,76 +142,6 @@
       <template #footer>
         <el-button @click="showManual = false">取消</el-button>
         <el-button type="primary" :loading="crawling" @click="submitManual">开始抓取</el-button>
-      </template>
-    </el-dialog>
-
-    <!-- 来源编辑弹窗 -->
-    <el-dialog v-model="showSource" :title="sourceForm.id ? '编辑来源' : '新增来源'" width="640px">
-      <el-form :model="sourceForm" label-width="100px">
-        <el-form-item label="来源名称" required>
-          <el-input v-model="sourceForm.name" placeholder="如:四川省公共资源交易中心" />
-        </el-form-item>
-        <el-form-item label="URL" required>
-          <el-input v-model="sourceForm.url" placeholder="列表页或种子页 URL" />
-        </el-form-item>
-        <el-form-item label="抓取模式">
-          <el-radio-group v-model="sourceForm.scrape_mode">
-            <el-radio value="crawl">整站抓取</el-radio>
-            <el-radio value="scrape">单页抓取</el-radio>
-            <el-radio value="query">查询式(验证码)</el-radio>
-          </el-radio-group>
-        </el-form-item>
-        <template v-if="sourceForm.scrape_mode === 'query'">
-          <el-alert type="warning" :closable="false" style="margin-bottom: 12px"
-            title="查询式抓取: 适用于 JS 动态渲染 + 图形验证码的公告站点(如四川政府采购网)。系统自动 OCR 识别验证码并模拟点击查询。" />
-          <el-form-item label="验证码框占位">
-            <el-input v-model="queryCfg.captcha_placeholder" placeholder="验证码输入框 placeholder，默认: 验证码" />
-          </el-form-item>
-          <el-form-item label="查询按钮文本">
-            <el-input v-model="queryCfg.query_button_text" placeholder="默认: 查询" />
-          </el-form-item>
-          <el-form-item label="验证码图关键字">
-            <el-input v-model="queryCfg.captcha_img_keyword" placeholder="验证码 img src 含此关键字，默认: getVerify" />
-          </el-form-item>
-          <el-form-item label="列表接口关键字">
-            <el-input v-model="queryCfg.api_url_keyword" placeholder="公告列表接口 URL 含此关键字，默认: selectInfoForIndex" />
-          </el-form-item>
-          <el-form-item label="结果路径">
-            <el-input v-model="queryCfg.result_rows_jsonpath" placeholder="JSON 列表路径，默认: data.rows" />
-          </el-form-item>
-        </template>
-        <el-form-item label="域名白名单">
-          <el-input v-model="sourceForm.allow_domains" placeholder="逗号分隔, 如:ggzyjy.sc.gov.cn（空=不限）" />
-        </el-form-item>
-        <el-form-item label="关键词">
-          <el-input v-model="sourceForm.keywords" placeholder="命中任一即通过, 逗号分隔" />
-        </el-form-item>
-        <el-form-item label="排除词">
-          <el-input v-model="sourceForm.exclude_keywords" placeholder="命中即丢弃, 逗号分隔" />
-        </el-form-item>
-        <el-form-item label="地域限定">
-          <el-input v-model="sourceForm.regions" placeholder="如:青川,广元,四川（空=不限）" />
-        </el-form-item>
-        <el-form-item label="AI 增强">
-          <el-select v-model="sourceForm.llm_enhance" style="width: 200px">
-            <el-option label="AI 语义筛选(默认)" value="filter" />
-            <el-option label="筛选+总结" value="all" />
-            <el-option label="仅总结" value="summary" />
-            <el-option label="关闭" value="" />
-          </el-select>
-          <div class="form-tip">AI 筛选会剔除与生态修复/地质无关的公告(每条约 3-4 秒)</div>
-        </el-form-item>
-        <el-form-item label="最大深度/页数" v-if="sourceForm.scrape_mode === 'crawl'">
-          <el-input-number v-model="sourceForm.max_depth" :min="0" :max="10" style="margin-right: 12px" />
-          <el-input-number v-model="sourceForm.max_pages" :min="1" :max="1000" />
-        </el-form-item>
-        <el-form-item label="描述">
-          <el-input v-model="sourceForm.description" type="textarea" :rows="2" />
-        </el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button @click="showSource = false">取消</el-button>
-        <el-button type="primary" @click="saveSource">保存</el-button>
       </template>
     </el-dialog>
 
@@ -328,16 +219,15 @@
 </template>
 
 <script setup lang="ts">
+defineOptions({ name: "WebClue" });
 import { ref, reactive, nextTick, onMounted, onUnmounted } from "vue";
 import { useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
-import { Link, Plus } from "@element-plus/icons-vue";
+import { Link, Plus, Download } from "@element-plus/icons-vue";
 import api from "@/api";
 import RegionCascader from "@/components/RegionCascader.vue";
 
 const router = useRouter();
-
-const activeTab = ref("clues");
 
 // 线索列表地域筛选
 const clueRegionVal = ref<string[]>([]);
@@ -356,6 +246,7 @@ function onClueRegionChange(v: { province: string; city: string; county: string 
 const clues = ref<any[]>([]);
 const clueTotal = ref(0);
 const clueLoading = ref(false);
+const exporting = ref(false);
 const query = reactive({ page: 1, page_size: 20, keyword: "", status: "" });
 
 async function loadClues() {
@@ -372,30 +263,33 @@ async function loadClues() {
   finally { clueLoading.value = false; }
 }
 
+async function exportWebClues() {
+  exporting.value = true;
+  try {
+    const token = localStorage.getItem("ssm_token");
+    const resp = await fetch("/api/v1/excel/export/web-clues", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!resp.ok) throw new Error("export failed");
+    const blob = await resp.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `web_clues_${new Date().toISOString().slice(0, 10)}.xlsx`;
+    a.click();
+    URL.revokeObjectURL(url);
+    ElMessage.success("已导出 Excel");
+  } catch {
+    ElMessage.error("导出失败");
+  } finally {
+    exporting.value = false;
+  }
+}
+
 function formatTime(t?: string) {
   if (!t) return "-";
   return t.replace("T", " ").slice(0, 19);
-}
-
-// ---------- 来源站点 ----------
-const sources = ref<any[]>([]);
-const sourceLoading = ref(false);
-
-async function loadSources() {
-  sourceLoading.value = true;
-  try {
-    const res: any = await api.get("/web-clues/sources", { params: { page: 1, page_size: 100 } });
-    sources.value = res.items || [];
-  } catch { /* 拦截器处理 */ }
-  finally { sourceLoading.value = false; }
-}
-
-async function toggleSource(row: any, v: boolean) {
-  try {
-    await api.put(`/web-clues/sources/${row.id}`, { enabled: v });
-    row.enabled = v;
-    ElMessage.success(v ? "已启用" : "已禁用");
-  } catch { /* 拦截器处理 */ }
 }
 
 // ---------- 抓取日志抽屉 ----------
@@ -466,136 +360,6 @@ async function loadCrawlLogs() {
 
 function stopCrawlPolling() {
   if (crawlPollTimer) { clearInterval(crawlPollTimer); crawlPollTimer = null; }
-}
-
-async function crawlSource(row: any) {
-  stopCrawlPolling();
-  crawlLogs.value = [];
-  crawlTaskId.value = "";
-  crawlRunning.value = true;
-  crawlDone.value = false;
-  crawlLogTitle.value = `抓取日志 - ${row.name}`;
-  showCrawlLog.value = true;
-
-  // 续看已有任务: 若该来源正在抓取, 直接打开其任务日志
-  async function resumeExisting(taskId: string) {
-    crawlTaskId.value = taskId;
-    crawlLogTitle.value = `抓取日志 - ${row.name}（进行中，续看）`;
-    await loadCrawlLogs();
-    crawlPollTimer = setTimeout(poll, 1000);
-  }
-
-  // 轮询日志, 检测完成标记
-  async function poll() {
-    if (!crawlTaskId.value) return;
-    await loadCrawlLogs();
-    const logs = crawlLogs.value;
-    const last = logs[logs.length - 1];
-    if (last && (/抓取完成/.test(last.msg) || /抓取失败/.test(last.msg) || /异常/.test(last.msg))) {
-      stopCrawlPolling();
-      crawlDone.value = true;
-      crawlRunning.value = false;
-      // 从日志解析结构化结果并弹出美观弹窗
-      buildCrawlResult(logs);
-      loadSources();
-      loadClues();
-    } else {
-      crawlPollTimer = setTimeout(poll, 1500);
-    }
-  }
-
-  try {
-    const res: any = await api.post(`/web-clues/crawl-source/${row.id}`, null, { timeout: 30000 });
-    if (res?.resumed && res?.task_id) {
-      // 该来源正在抓取: 续看现有任务日志, 不重复提交
-      ElMessage.info("该来源正在抓取中，已为您打开当前进度日志");
-      await resumeExisting(res.task_id);
-    } else if (res?.task_id) {
-      crawlTaskId.value = res.task_id;
-      crawlPollTimer = setTimeout(poll, 1000);
-      // 也轮询抓取结果(从日志统计)
-    }
-  } catch (e: any) {
-    crawlDone.value = true;
-    crawlRunning.value = false;
-    ElMessage.error(`提交抓取失败: ${e?.response?.data?.detail || e?.message || "未知错误"}`);
-  }
-}
-
-async function removeSource(row: any) {
-  await ElMessageBox.confirm(`确认删除来源「${row.name}」？`, "提示", { type: "warning" });
-  try {
-    await api.delete(`/web-clues/sources/${row.id}`);
-    ElMessage.success("已删除");
-    loadSources();
-  } catch { /* 拦截器处理 */ }
-}
-
-// ---------- 来源编辑 ----------
-const showSource = ref(false);
-const sourceForm = ref<any>({
-  id: null, name: "", url: "", description: "", allow_domains: "",
-  keywords: "", exclude_keywords: "", regions: "", scrape_mode: "crawl",
-  max_depth: 1, max_pages: 50, llm_enhance: "filter", enabled: true,
-});
-
-function modeLabel(mode?: string) {
-  const m = mode ?? "";
-  return ({ crawl: "整站", scrape: "单页", query: "查询式" } as Record<string, string>)[m] || m;
-}
-
-// 查询式抓取配置(独立编辑, 保存时并入 sourceForm)
-const queryCfg = ref<any>({
-  captcha_placeholder: "验证码",
-  query_button_text: "查询",
-  captcha_img_keyword: "getVerify",
-  api_url_keyword: "selectInfoForIndex",
-  result_rows_jsonpath: "data.rows",
-  captcha_refresh_keyword: "换一张",
-});
-
-const defaultSourceForm = () => ({
-  id: null, name: "", url: "", description: "", allow_domains: "",
-  keywords: "", exclude_keywords: "", regions: "", scrape_mode: "crawl",
-  max_depth: 1, max_pages: 50, llm_enhance: "filter", enabled: true,
-});
-
-function openSourceDialog(row?: any) {
-  sourceForm.value = row ? { ...row } : defaultSourceForm();
-  // 回填查询配置
-  queryCfg.value = {
-    captcha_placeholder: "验证码",
-    query_button_text: "查询",
-    captcha_img_keyword: "getVerify",
-    api_url_keyword: "selectInfoForIndex",
-    result_rows_jsonpath: "data.rows",
-    captcha_refresh_keyword: "换一张",
-    ...((row?.query_config as any) || {}),
-  };
-  showSource.value = true;
-}
-
-async function saveSource() {
-  const f = sourceForm.value;
-  if (!f.name || !f.url) { ElMessage.warning("请填写名称和 URL"); return; }
-  const payload: any = {
-    name: f.name, url: f.url, description: f.description,
-    allow_domains: f.allow_domains || "", keywords: f.keywords || "",
-    exclude_keywords: f.exclude_keywords || "", regions: f.regions || "",
-    scrape_mode: f.scrape_mode, max_depth: f.max_depth, max_pages: f.max_pages,
-    llm_enhance: f.llm_enhance ?? "filter",
-    enabled: f.enabled,
-  };
-  if (f.scrape_mode === "query") {
-    payload.query_config = { ...queryCfg.value };
-  }
-  try {
-    if (f.id) await api.put(`/web-clues/sources/${f.id}`, payload);
-    else await api.post("/web-clues/sources", payload);
-    ElMessage.success("已保存");
-    showSource.value = false;
-    loadSources();
-  } catch { /* 拦截器处理 */ }
 }
 
 // ---------- 手动抓取 ----------
@@ -753,7 +517,7 @@ async function batchRemoveClues() {
   } catch { /* 拦截器处理 */ }
 }
 
-onMounted(() => { loadClues(); loadSources(); });
+onMounted(() => { loadClues(); });
 onUnmounted(stopCrawlPolling);
 </script>
 

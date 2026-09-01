@@ -59,10 +59,12 @@ class ClueFilter:
         title: str = "",
         markdown: str = "",
     ) -> ClueFilterResult:
-        # 1. 域名白名单
+        # 1. 域名白名单(支持子域: 配置父域即允许其下所有子域)
         domain = _extract_domain(url)
-        if self.allow_domains and domain not in self.allow_domains:
-            return ClueFilterResult(False, reason=f"域名不在白名单: {domain}")
+        if self.allow_domains:
+            allowed = any(domain == d or domain.endswith("." + d) for d in self.allow_domains)
+            if not allowed:
+                return ClueFilterResult(False, reason=f"域名不在白名单: {domain}")
 
         text_block = f"{title}\n{markdown}"[:20000]
 

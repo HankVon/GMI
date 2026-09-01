@@ -1,78 +1,84 @@
 /* ============================================================
-   SSM 全局主题 · 对齐「单位详情页」风格
-   主色 #2979ff · 卡片化 · 柔和阴影 · 浅色渐变背景
+   SSM 全局主题 · 勃艮第红(Burgundy)高端机构风
+   参考「女娲人工智能学院」官网视觉: 白底 + 深红点睛 + 大量留白
    通过覆盖 Element Plus CSS 变量实现全站统一
    ============================================================ */
 
 :root {
-  /* 品牌主色 */
-  --ssm-primary: #2979ff;
-  --ssm-primary-dark: #1d63e0;
-  --ssm-primary-light: #5c96ff;
-  --ssm-primary-soft: #eef4ff;
-  --ssm-primary-grad: linear-gradient(135deg, #2979ff 0%, #4f8aff 100%);
-  --ssm-success: #2bb673;
-  --ssm-warning: #f5a623;
-  --ssm-danger: #f56c6c;
+  /* ===== 品牌主色: 勃艮第红(Burgundy)系 ===== */
+  --ssm-primary: #a51c30;
+  --ssm-primary-dark: #851626;
+  --ssm-primary-light: #c0394d;
+  --ssm-primary-soft: #fbecee;
+  --ssm-primary-grad: linear-gradient(135deg, #a51c30 0%, #c0394d 100%);
+  --ssm-success: #2f8f5b;
+  --ssm-warning: #c98a16;
+  --ssm-danger: #c0392b;
 
   /* 背景 / 卡片 */
-  --ssm-bg: #f0f3f8;
+  --ssm-bg: #f6f5f3;
   --ssm-card-bg: #ffffff;
-  --ssm-border: #e9edf6;
-  --ssm-shadow: 0 2px 12px rgba(30, 60, 114, 0.06);
-  --ssm-shadow-hover: 0 8px 24px rgba(30, 60, 114, 0.12);
-  --ssm-radius: 10px;
+  --ssm-border: #ece8e4;
+  --ssm-shadow: 0 2px 14px rgba(60, 30, 30, 0.05);
+  --ssm-shadow-hover: 0 10px 28px rgba(60, 30, 30, 0.11);
+  --ssm-radius: 8px;
 
   /* 文本 */
-  --ssm-text-main: #1f2d3d;
-  --ssm-text-regular: #4b5264;
-  --ssm-text-secondary: #909399;
+  --ssm-text-main: #1c1a1a;
+  --ssm-text-regular: #4a4646;
+  --ssm-text-secondary: #8c8784;
 
-  /* ===== Element Plus 主题变量覆盖 ===== */
-  --el-color-primary: #2979ff;
-  --el-color-primary-light-3: #5c96ff;
-  --el-color-primary-light-5: #8bb4ff;
-  --el-color-primary-light-7: #bad2ff;
-  --el-color-primary-light-8: #d3e1ff;
-  --el-color-primary-light-9: #eef4ff;
-  --el-color-primary-dark-2: #1d63e0;
+  /* ===== 参考站设计令牌(章节头用) ===== */
+  --ssm-section-num: #a51c30;          /* 章节编号红色 */
+  --ssm-eyebrow: #b08d57;             /* 英文小标签(暗金/古铜) */
+  --ssm-eyebrow-spacing: 0.18em;      /* 英文标签字间距 */
+  --ssm-hairline: #e7e2dc;            /* 极细分隔线 */
 
-  --el-color-success: #2bb673;
-  --el-color-success-light-3: #5cc894;
-  --el-color-success-light-5: #8ddab5;
-  --el-color-success-light-7: #bdecd6;
-  --el-color-success-light-8: #d5f3e5;
-  --el-color-success-light-9: #edfaf4;
-  --el-color-success-dark-2: #23915c;
+  /* ===== Element Plus 主题变量覆盖(Burgundy) ===== */
+  --el-color-primary: #a51c30;
+  --el-color-primary-light-3: #c0394d;
+  --el-color-primary-light-5: #d2717f;
+  --el-color-primary-light-7: #eab4bc;
+  --el-color-primary-light-8: #f3cfd4;
+  --el-color-primary-light-9: #fbecee;
+  --el-color-primary-dark-2: #851626;
 
-  --el-color-warning: #f5a623;
-  --el-color-warning-light-3: #f8bc58;
-  --el-color-warning-light-5: #fad28d;
-  --el-color-warning-light-7: #fce8c2;
-  --el-color-warning-light-8: #fdf1d8;
-  --el-color-warning-light-9: #fef9ec;
-  --el-color-warning-dark-2: #c9851c;
+  --el-color-success: #2f8f5b;
+  --el-color-success-light-3: #5cab7f;
+  --el-color-success-light-5: #8fc6a4;
+  --el-color-success-light-7: #bee0cc;
+  --el-color-success-light-8: #d6ecde;
+  --el-color-success-light-9: #ebf6ef;
+  --el-color-success-dark-2: #267449;
+
+  --el-color-warning: #c98a16;
+  --el-color-warning-light-3: #d9a84c;
+  --el-color-warning-light-5: #e7c587;
+  --el-color-warning-light-7: #f1dcb4;
+  --el-color-warning-light-8: #f8e9d3;
+  --el-color-warning-light-9: #fdf5e9;
+  --el-color-warning-dark-2: #a16e12;
 
   --el-border-radius-base: 6px;
   --el-border-radius-small: 4px;
   --el-border-radius-round: 20px;
-  --el-border-color: #e9edf6;
-  --el-border-color-light: #eef1f7;
-  --el-border-color-lighter: #f3f5fa;
-  --el-border-color-extra-light: #f7f9fc;
+  --el-border-color: #ece8e4;
+  --el-border-color-light: #f1eceae;
+  --el-border-color-lighter: #f6f3f1;
+  --el-border-color-extra-light: #faf8f6;
 
   --el-fill-color-blank: #ffffff;
-  --el-fill-color-light: #f7f9fc;
-  --el-fill-color-lighter: #fafbfe;
+  --el-fill-color-light: #faf8f6;
+  --el-fill-color-lighter: #fcfbfa;
 
-  --el-text-color-primary: #1f2d3d;
-  --el-text-color-regular: #4b5264;
-  --el-text-color-secondary: #909399;
+  --el-text-color-primary: #1c1a1a;
+  --el-text-color-regular: #4a4646;
+  --el-text-color-secondary: #8c8784;
 
-  --el-box-shadow-light: 0 2px 12px rgba(30, 60, 114, 0.06);
-  --el-box-shadow: 0 6px 24px rgba(30, 60, 114, 0.1);
+  --el-box-shadow-light: 0 2px 14px rgba(60, 30, 30, 0.05);
+  --el-box-shadow: 0 6px 24px rgba(60, 30, 30, 0.09);
 
-  --el-font-family: "PingFang SC", "Microsoft YaHei", "Helvetica Neue", Helvetica, Arial, sans-serif;
+  --el-font-family: "Source Han Serif SC", "Noto Serif SC", "Songti SC", "PingFang SC", "Microsoft YaHei", "Helvetica Neue", Helvetica, Arial, sans-serif;
 }
 
 /* ===== 全局基础 ===== */
@@ -249,18 +255,26 @@ body {
   background: var(--ssm-primary-grad);
 }
 
-/* 按钮: 圆角+主色渐变 */
+/* 按钮: 圆角+主色渐变(勃艮第红,与品牌色一致) */
 .el-button--primary {
-  --el-button-hover-bg-color: var(--ssm-primary-light);
-  --el-button-hover-border-color: var(--ssm-primary-light);
-  background-image: linear-gradient(135deg, #2979ff 0%, #4f8aff 100%);
+  --el-button-text-color: #ffffff;
+  --el-button-hover-text-color: #ffffff;
+  --el-button-active-text-color: #ffffff;
+  --el-button-hover-bg-color: var(--ssm-primary-light, #c0394d);
+  --el-button-hover-border-color: var(--ssm-primary-light, #c0394d);
+  background-image: linear-gradient(135deg, var(--ssm-primary, #a51c30) 0%, var(--ssm-primary-light, #c0394d) 100%);
   border: none;
-  box-shadow: 0 2px 6px rgba(41, 121, 255, 0.25);
+  color: #ffffff !important;
+  box-shadow: 0 2px 6px rgba(165, 28, 48, 0.25);
   transition: all 0.2s ease;
 }
 .el-button--primary:hover {
-  box-shadow: 0 4px 12px rgba(41, 121, 255, 0.35);
+  background-image: linear-gradient(135deg, var(--ssm-primary-dark, #851626) 0%, var(--ssm-primary, #a51c30) 100%);
+  box-shadow: 0 4px 12px rgba(165, 28, 48, 0.35);
   transform: translateY(-1px);
+}
+.el-button--primary:active {
+  background-image: linear-gradient(135deg, var(--ssm-primary-dark, #851626) 0%, var(--ssm-primary-dark, #851626) 100%);
 }
 .el-button--primary.is-plain,
 .el-button--primary.is-link,
@@ -268,11 +282,48 @@ body {
   background-image: none;
   box-shadow: none;
   border: none;
-  color: var(--ssm-primary, #2979ff);
+  color: var(--ssm-primary, #a51c30) !important;
 }
-.el-button--primary.is-text:hover {
-  background: var(--ssm-primary-light-bg, #ecf3ff);
-  color: var(--ssm-primary-dark, #1d63e0);
+.el-button--primary.is-text:hover,
+.el-button--primary.is-link:hover {
+  background: var(--ssm-primary-soft, #fbecee);
+  color: var(--ssm-primary-dark, #851626) !important;
+}
+
+/* 所有链接/文本型按钮统一恢复文字色(避免被实心按钮白字规则误伤) */
+.el-button.is-link,
+.el-button.is-text {
+  color: var(--ssm-text-main, #1c1a1a);
+}
+.el-button.is-link.el-button--primary,
+.el-button.is-text.el-button--primary {
+  color: var(--ssm-primary, #a51c30) !important;
+}
+.el-button.is-link.el-button--danger,
+.el-button.is-text.el-button--danger {
+  color: var(--el-color-danger, #c0392b);
+}
+.el-button.is-link.el-button--warning,
+.el-button.is-text.el-button--warning {
+  color: var(--ssm-warning, #c98a16);
+}
+.el-button.is-link.el-button--success,
+.el-button.is-text.el-button--success {
+  color: var(--ssm-success, #2f8f5b);
+}
+.el-button.is-link.el-button--info,
+.el-button.is-text.el-button--info {
+  color: var(--el-text-color-regular, #4a4646);
+}
+
+/* 输入框 placeholder 颜色加深(在 input-group append 场景下更清晰) */
+.el-input__inner::placeholder,
+.el-textarea__inner::placeholder {
+  color: #9a9590;
+  opacity: 1;
+}
+.el-input.is-disabled .el-input__inner::placeholder {
+  color: #c0bdb8;
 }
 
 /* 输入框聚焦描边 */

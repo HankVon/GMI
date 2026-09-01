@@ -44,7 +44,7 @@
       >
         <span class="pc-project-name" :title="pj.name">{{ pj.name }}</span>
         <span class="pc-project-meta">
-          <span class="pc-project-role">{{ pj.role || "-" }}</span>
+          <span class="pc-project-role">{{ roleLabel(pj.role) || "-" }}</span>
         </span>
         <el-icon class="pc-project-arrow"><ArrowRight /></el-icon>
       </div>
@@ -58,6 +58,8 @@
 <script setup lang="ts">
 import { useRouter } from "vue-router";
 import { Phone, Message, OfficeBuilding, Briefcase, ArrowRight } from "@element-plus/icons-vue";
+import { roleLabel } from "@/utils/roleLabels";
+import { useNavBase } from "@/utils/navBase";
 
 const props = defineProps<{
   person: any;
@@ -65,9 +67,10 @@ const props = defineProps<{
 }>();
 
 const router = useRouter();
+const { navTo } = useNavBase();
 
 function goProject(id: number) {
-  router.push(`/workspace/projects/${id}`);
+  router.push(navTo(`/projects/${id}`));
 }
 
 defineEmits<{
@@ -101,8 +104,8 @@ defineEmits<{
   flex-shrink: 0;
 }
 .pc-head-info { flex: 1; min-width: 0; }
-.pc-name-row { display: flex; align-items: center; gap: 8px; }
-.pc-name { font-size: 15px; font-weight: 600; color: #1f2d3d; }
+.pc-name-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.pc-name { font-size: 15px; font-weight: 600; color: #1f2d3d; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pc-company {
   display: flex;
   align-items: center;
@@ -110,8 +113,10 @@ defineEmits<{
   font-size: 12.5px;
   color: #909399;
   margin-top: 3px;
+  min-width: 0;
 }
-.pc-company :deep(.el-icon) { font-size: 13px; }
+.pc-company span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pc-company :deep(.el-icon) { font-size: 13px; flex-shrink: 0; }
 .pc-actions { flex-shrink: 0; display: flex; gap: 6px; }
 
 /* 联系方式 */

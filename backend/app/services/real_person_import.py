@@ -14,6 +14,7 @@ Excel 列头(24列, 只映射其中 5 个有业务意义的字段):
 """
 import datetime
 import io
+from typing import Optional
 
 from openpyxl import load_workbook
 from sqlalchemy import select
@@ -57,6 +58,50 @@ def _parse_ws(ws) -> list[dict]:  # pyright: ignore[reportMissingParameterType]
     return rows
 
 
+# 花名册关键列(用于自动定位列头行: 兼容首行为标题行「人员列表」的情况)
+_PERSON_KEYS = {"姓名", "主岗", "手机号码", "所属单位", "所属部门", "单位名称", "职位", "电话", "办公电话"}
+
+
+def _cell_grid(file_bytes: bytes) -> list[list]:
+    """读取工作表全部单元格为二维网格(自动适配 xls/xlsx)。"""
+    head = file_bytes[:8]
+    if head[:4] == b"\xd0\xcf\x11\xe0":  # OLE2 = .xls
+        import xlrd
+        wb = xlrd.open_workbook(file_contents=file_bytes)
+        ws = wb.sheet_by_index(0)
+        return [[ws.cell_value(r, c) for c in range(ws.ncols)] for r in range(ws.nrows)]
+    wb = load_workbook(io.BytesIO(file_bytes), data_only=True)
+    ws = wb.active
+    return [[ws.cell(r, c).value for c in range(1, ws.max_column + 1)]
+            for r in range(1, ws.max_row + 1)]
+
+
+def _load_rows(file_bytes: bytes, key_columns: set[str] | None = None) -> list[dict]:
+    """兼容 .xls(xlrd) 与 .xlsx(openpyxl) 的解析, 返回 list[dict]。
+
+    自动定位列头行: 有些导出文件首行是标题(如「人员列表」), 真实列头在第二行。
+    取前 5 行中命中关键列名最多的一行作为列头, 数据从其下一行开始。
+    """
+    key_columns = key_columns or _PERSON_KEYS
+    grid = _cell_grid(file_bytes)
+    if not grid:
+        return []
+
+    best_idx, best_score = 0, -1
+    for i in range(min(5, len(grid))):
+        score = sum(1 for c in grid[i] if str(c).strip() in key_columns)
+        if score > best_score:
+            best_idx, best_score = i, score
+
+    headers = [str(c).strip() or f"__col{j}__" for j, c in enumerate(grid[best_idx])]
+    rows = []
+    for r in range(best_idx + 1, len(grid)):
+        row = {headers[j]: grid[r][j] for j in range(len(headers))}
+        if any(str(v).strip() not in ("", "nan") for v in row.values()):
+            rows.append(row)
+    return rows
+
+
 def _find_person(db: Session, name: str):
     return db.execute(
         select(Person).where(Person.name == name, Person.is_deleted == False).limit(1)
@@ -78,9 +123,41 @@ def _find_company(db: Session, name: str):
     ).scalar_one_or_none()
 
 
-def import_real_person(db: Session, file_bytes: bytes) -> dict:
+def _ensure_company(db: Session, name: str, log: Optional[list] = None):
+    """按名称找单位, 未命中时自动创建(事业单位/企业按后缀判定)。
+
+    人员花名册的「所属单位」多为机关/事业单位(地质大队/中心/局等),
+    库存量单位缺失时应自动创建, 否则人员将失去单位归属。
+    """
+    comp = _find_company(db, name)
+    if comp:
+        return comp
+    # 判定类型: 含「公司/厂/集团」→ 企业, 否则 → 事业单位
+    ctype = "事业单位"
+    if any(k in name for k in ("公司", "厂", "集团", "事务所", "有限")):
+        ctype = "企业"
+    comp = Company(
+        code=_gen_company_code(),
+        name=name,
+        company_type=ctype,
+        ext_attrs={"source": "花名册导入"},
+    )
+    db.add(comp)
+    db.flush()
+    if log is not None:
+        log.append(f"自动创建单位[{name}] type={ctype} id={comp.id}")
+    return comp
+
+
+def _gen_company_code() -> str:
+    """生成单位编码: CO-HR + 毫秒时间戳。"""
+    return f"CO-HR{datetime.datetime.now():%y%m%d%H%M%S%f}"  # noqa: DTZ005
+
+
+def import_real_person(db: Session, file_bytes: bytes, progress=None) -> dict:
     """解析人员花名册 xlsx, 按姓名复用更新/创建人员。
 
+    progress: 可选回调(stage, imported, updated, skipped, failed, log), 用于后台任务实时进度。
     返回:
       {
         "success": bool,
@@ -92,9 +169,7 @@ def import_real_person(db: Session, file_bytes: bytes) -> dict:
         "errors": [str],
       }
     """
-    wb = load_workbook(io.BytesIO(file_bytes), data_only=True)
-    ws = wb.active
-    rows = _parse_ws(ws)
+    rows = _load_rows(file_bytes, _PERSON_KEYS)
     if not rows:
         return {"success": False, "message": "Excel 无数据", "imported": 0,
                 "updated": 0, "skipped": 0, "log": [], "errors": ["无数据"]}
@@ -126,10 +201,24 @@ def import_real_person(db: Session, file_bytes: bytes) -> dict:
         company_id = None
         if unit_name:
             comp = _find_company(db, unit_name)
+            if not comp:
+                comp = _ensure_company(db, unit_name, log=log)
             if comp:
                 company_id = comp.id
-            else:
-                log.append(f"[{name}] 未匹配到所属单位[{unit_name}], 保持原单位")
+
+        # 扩展字段(非核心, 存 ext_attrs): 性别/职称/职务级别/类别/类型/出生日期/办公电话/入职/身份证/副岗
+        ext = {}
+        if department:
+            ext["department"] = department
+        for xlsx_key, attr_key in (
+            ("性别", "gender"), ("职称", "title"), ("职务级别", "position_level"),
+            ("人员类别", "person_category"), ("人员类型", "person_type"),
+            ("出生日期", "birth_date"), ("办公电话", "office_phone"),
+            ("入职时间", "entry_date"), ("身份证号码", "id_card"), ("副岗", "secondary_position"),
+        ):
+            v = _cell(row, xlsx_key)
+            if v:
+                ext[attr_key] = v
 
         person = _find_person(db, name)
         try:
@@ -141,7 +230,7 @@ def import_real_person(db: Session, file_bytes: bytes) -> dict:
                     company_id=company_id,
                     position=position or None,
                     status="active",
-                    ext_attrs={"department": department} if department else None,
+                    ext_attrs=ext or None,
                 )
                 db.add(person)
                 db.flush()
@@ -162,12 +251,16 @@ def import_real_person(db: Session, file_bytes: bytes) -> dict:
                     changed.append(f"单位->{company_id}")
                 elif company_id and person.company_id != company_id:
                     log.append(f"[{name}] 已有单位(项目清单), 保持单位->{person.company_id}, 不覆盖")
-                if department:
+                if ext:
                     attrs = dict(person.ext_attrs or {})
-                    if attrs.get("department") != department:
-                        attrs["department"] = department
+                    ext_changed = []
+                    for k, v in ext.items():
+                        if attrs.get(k) != v:
+                            attrs[k] = v
+                            ext_changed.append(f"{k}->{v}")
+                    if ext_changed:
                         person.ext_attrs = attrs
-                        changed.append(f"部门->{department}")
+                        changed.extend(ext_changed)
                 if changed:
                     updated += 1
                     log.append(f"[{idx}] 更新[{name}] {'; '.join(changed)}")
@@ -178,6 +271,10 @@ def import_real_person(db: Session, file_bytes: bytes) -> dict:
             db.rollback()
             errors.append(f"[{idx}] {name} 导入失败: {e}")
             log.append(f"[{idx}] {name} 导入失败: {e}")
+        # 实时进度(后台任务轮询)
+        if progress:
+            progress(stage="", imported=imported, updated=updated, skipped=skipped,
+                     failed=len(errors), log=log[-1] if log else "")
 
     db.commit()
 

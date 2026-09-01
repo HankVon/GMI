@@ -45,6 +45,46 @@ def _target_of(text: str) -> str:
     return extract_target_province(text)
 
 
+# 公司业务能力关键词(与 intent_crawler._BUSINESS_KEYWORDS 对齐, 用于标注「与哪些公司能力匹配」)
+_CAPABILITY_KW = (
+    "地质灾害", "地灾", "滑坡", "泥石流", "崩塌", "隐患治理", "排危", "避险搬迁", "边坡治理",
+    "生态修复", "生态治理", "矿山修复", "矿山地质", "恢复治理", "水土保持", "水土流失",
+    "地质勘察", "地质勘查", "工程勘察", "岩土", "钻探", "监测预警", "地质环境监测", "测绘",
+    "地灾评估", "危险性评估", "勘查设计", "勘察设计", "治理工程", "整治",
+)
+
+
+def _capability_of(title: str, region: str = "") -> dict:
+    """基于标题+地域, 生成「与公司库能力匹配」标注。
+
+    返回 {matched: bool, keywords: [命中业务词], companies: [匹配的公司名]}
+    匹配规则:
+      1) 标题命中业务能力关键词 → 标记可匹配
+      2) 地域(川藏新)与目标省份一致 → 地域可匹配
+      3) 公司库中 company_type/行业 含命中关键词的公司 → 列出
+    """
+    hits = [k for k in _CAPABILITY_KW if k in (title or "")]
+    if not hits:
+        return {"matched": False, "keywords": [], "companies": []}
+    from app.models.company import Company
+    from app.database import SessionLocal
+    db = SessionLocal()
+    try:
+        matched_companies = []
+        for c in db.execute(
+            select(Company).where(Company.is_deleted == False).limit(500)
+        ).scalars().all():
+            ctype = c.company_type or ""
+            name = c.name or ""
+            if any(k in ctype or k in name for k in hits[:3]):
+                matched_companies.append(c.name)
+                if len(matched_companies) >= 5:
+                    break
+        return {"matched": True, "keywords": hits[:4], "companies": matched_companies}
+    finally:
+        db.close()
+
+
 @router.get("/search")
 async def intelligence_search(
     stage: Optional[str] = Query(None, description="阶段 investment/bidding/awarded, 缺省全部"),
@@ -89,6 +129,7 @@ async def intelligence_search(
                 "source_name": it.dept or "政务源",
                 "purchaser": it.dept or "", "amount": str(it.amount or "") + "万" if it.amount else "",
                 "summary": it.raw_text or "",
+                "capability": _capability_of(it.title or "", it.region or ""),
             })
 
     # 2) 招标期
@@ -126,7 +167,13 @@ async def intelligence_search(
 
     # 3) 中标公示期
     if want["awarded"]:
+        # 数据范围过滤(复用 bid 对象级授权; 未启用/无对象授权时保持现状)
+        from app.services.data_scope_service import resolve_scope, scope_filter
+        _scope = resolve_scope(db, user, "bid")
+        _cond = scope_filter(_scope, BidNotice, "bid")
         stmt = select(BidNotice).where(BidNotice.is_deleted == False)
+        if _cond is not None:
+            stmt = stmt.where(_cond)
         if keyword:
             stmt = stmt.where(BidNotice.title.contains(keyword))
         if days:

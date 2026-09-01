@@ -3,10 +3,25 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>SSM 项目基石数据平台</title>
+    <title>地矿智库 · 地质与产业情报平台</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <!-- 参考女娲学院字体体系: Fraunces(衬线展示) + Archivo(无衬线正文) -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Archivo:ital,wght@0,400;0,500;0,600;0,700;0,800;1,400&family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;0,9..144,700;1,9..144,400&display=swap"
+      rel="stylesheet"
+    />
+    <!-- 首屏加载动画样式(外置为 public 资源, 规避 Vite html-inline-proxy 构建失败) -->
+    <link rel="stylesheet" href="/boot.css" />
   </head>
   <body>
-    <div id="app"></div>
+    <div id="app">
+      <div class="app-boot">
+        <div class="app-boot-spinner"></div>
+        <div class="app-boot-text">GMI 数据平台 · 加载中…</div>
+      </div>
+    </div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

@@ -81,6 +81,19 @@
         <el-table-column prop="amount" label="预算" width="110">
           <template #default="{ row }">{{ row.amount || '-' }}</template>
         </el-table-column>
+        <el-table-column label="能力匹配" width="200">
+          <template #default="{ row }">
+            <div v-if="row.capability?.matched" class="cap-cell">
+              <el-tooltip v-if="row.capability.companies?.length" :content="row.capability.companies.join('、')" placement="top">
+                <el-tag size="small" type="success" effect="light" class="cap-tag">
+                  匹配{{ row.capability.companies.length }}家公司
+                </el-tag>
+              </el-tooltip>
+              <el-tag v-for="k in (row.capability.keywords || []).slice(0, 2)" :key="k" size="small" effect="plain" type="info" class="cap-tag">{{ k }}</el-tag>
+            </div>
+            <span v-else class="cap-none">-</span>
+          </template>
+        </el-table-column>
         <el-table-column label="摘要" min-width="220" show-overflow-tooltip>
           <template #default="{ row }">{{ row.summary || '-' }}</template>
         </el-table-column>
@@ -96,6 +109,7 @@
 </template>
 
 <script setup lang="ts">
+defineOptions({ name: "Intelligence" });
 import { ref, onMounted } from "vue";
 import { Refresh } from "@element-plus/icons-vue";
 import api from "@/api";
@@ -174,4 +188,7 @@ onMounted(loadList);
 .pager { display: flex; justify-content: flex-end; margin-top: 12px; }
 .clickable-table :deep(.el-table__row) { cursor: pointer; }
 .clickable-table :deep(.el-table__row:hover > td.el-table__cell) { background-color: #eef5ff !important; }
+.cap-cell { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.cap-tag { max-width: 110px; }
+.cap-none { color: #c0c4cc; }
 </style>

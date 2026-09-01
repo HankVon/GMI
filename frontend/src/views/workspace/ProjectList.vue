@@ -3,7 +3,7 @@
     <div class="page-head">
       <h2 class="page-title">项目管理</h2>
       <div class="head-actions">
-        <el-button type="primary" @click="openCreate">
+        <el-button v-if="!isPortal" type="primary" @click="openCreate">
           <el-icon style="margin-right: 4px"><Plus /></el-icon>新增项目
         </el-button>
       </div>
@@ -73,12 +73,15 @@
       :columns="columns"
       :loading="loading"
       :total="total"
-      :can-export="true"
-      :can-import="true"
+      :can-export="!isPortal"
+      :can-import="!isPortal"
+      :show-actions="!isPortal"
+      :selectable="!isPortal"
+      :can-batch-dept="!isPortal"
       :keyword="keyword"
       @search="handleSearch"
       @sort-change="handleSort"
-      @row-click="(row: any) => $router.push(`/workspace/projects/${row.id}`)"
+      @row-click="goDetail"
       @page-change="handlePage"
     >
     <template #toolbar-extra>
@@ -148,7 +151,7 @@
       </template>
     </el-dialog>
     <template #actions="{ row }">
-      <el-popconfirm title="确定删除？" @confirm="handleDelete(row.id)">
+      <el-popconfirm v-if="!isPortal" title="确定删除？" @confirm="handleDelete(row.id)">
         <template #reference>
           <el-button text type="danger" size="small" @click.stop>删除</el-button>
         </template>
@@ -159,10 +162,22 @@
 </template>
 
 <script setup lang="ts">
+defineOptions({ name: "ProjectList" });
 import { ref, onMounted } from "vue";
+import { useRouter } from "vue-router";
 import { ElMessage } from "element-plus";
 import { Plus, Upload, UploadFilled, RefreshLeft } from "@element-plus/icons-vue";
 import api from "@/api";
+import { cachedConfig } from "@/api/staticCache";
+import { useNavBase } from "@/utils/navBase";
+import { usePortalMode } from "@/utils/portalMode";
+
+const router = useRouter();
+const { navTo } = useNavBase();
+const { isPortal } = usePortalMode();
+function goDetail(row: any) {
+  router.push(navTo(`/projects/${row.id}`));
+}
 import DynamicTable from "@/components/DynamicTable.vue";
 import RegionCascader from "@/components/RegionCascader.vue";
 import DynamicForm from "@/components/DynamicForm.vue";
@@ -360,21 +375,21 @@ async function loadData() {
 
 async function loadCategories() {
   try {
-    const res: any = await api.get("/option-sets/project_category/items");
+    const res: any = await cachedConfig("/option-sets/project_category/items");
     categoryOptions.value = (res.items || []).map((i: any) => ({ value: i.value, label: i.label }));
   } catch { categoryOptions.value = []; }
 }
 
 async function loadStages() {
   try {
-    const res: any = await api.get("/option-sets/project_progress_stage/items");
+    const res: any = await cachedConfig("/option-sets/project_progress_stage/items");
     stageOptions.value = (res.items || []).map((i: any) => ({ value: i.value, label: i.label }));
   } catch { stageOptions.value = []; }
 }
 
 async function appendDynamicColumns() {
   try {
-    const res: any = await api.get("/dynamic/project/form-config?mode=view");
+    const res: any = await cachedConfig("/dynamic/project/form-config?mode=view");
     const dynFields = (res.fields || []).filter((f: any) => f.is_list_visible !== false);
     const existingKeys = new Set(columns.value.map((c) => c.field_key));
     for (const df of dynFields) {

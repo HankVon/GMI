@@ -2,7 +2,7 @@
   <div class="list-page">
     <div class="page-head">
       <h2 class="page-title">人员管理</h2>
-      <el-button type="primary" @click="showAdd = true"><el-icon><Plus /></el-icon>新增人员</el-button>
+      <el-button v-if="!isPortal" type="primary" @click="showAdd = true"><el-icon><Plus /></el-icon>新增人员</el-button>
     </div>
     <DynamicTable
       entity-type="persons"
@@ -10,18 +10,21 @@
       :columns="columns"
       :loading="loading"
       :total="total"
-    :can-export="true"
-    :can-import="true"
+    :can-export="!isPortal"
+    :can-import="!isPortal"
+    :show-actions="!isPortal"
+    :selectable="!isPortal"
+    :can-batch-dept="!isPortal"
     :filters="filters"
     @search="handleSearch"
     @sort-change="handleSort"
     @filter-change="handleFilter"
-    @row-click="(row: any) => $router.push(`/workspace/persons/${row.id}`)"
+    @row-click="goDetail"
     @page-change="handlePage"
   >
       <template #actions="{ row }">
-        <el-button link type="primary" size="small" @click="$router.push(`/workspace/persons/${row.id}`)">详情</el-button>
-        <el-button link type="danger" size="small" @click="removePerson(row)">删除</el-button>
+        <el-button link type="primary" size="small" @click="goDetail(row)">详情</el-button>
+        <el-button v-if="!isPortal" link type="danger" size="small" @click="removePerson(row)">删除</el-button>
       </template>
     </DynamicTable>
 
@@ -59,10 +62,21 @@
 </template>
 
 <script setup lang="ts">
+defineOptions({ name: "PersonList" });
 import { ref, onMounted } from "vue";
+import { useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
 import api from "@/api";
 import DynamicTable from "@/components/DynamicTable.vue";
+import { useNavBase } from "@/utils/navBase";
+import { usePortalMode } from "@/utils/portalMode";
+
+const router = useRouter();
+const { navTo } = useNavBase();
+const { isPortal } = usePortalMode();
+function goDetail(row: any) {
+  router.push(navTo(`/persons/${row.id}`));
+}
 
 const list = ref<any[]>([]);
 const total = ref(0);

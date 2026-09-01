@@ -24,7 +24,12 @@ RELATION_LABELS = {
     "KNOWN": "认识",
     "OWNED_BY": "控股",
     "ADMIN_BY": "管理",
+    "RESPONSIBLE_FOR": "负责",
+    "GRANTED_ACCESS": "被授权查看",
 }
+
+# 系统授权类关系(非业务事实): AI 上下文分析时须标注为「系统授权」而非真实业务关系
+_GRANT_RELATIONS = ("RESPONSIBLE_FOR", "GRANTED_ACCESS")
 
 
 _driver = None  # 模块级单例 driver, 复用 Neo4j 连接池(避免每次请求重建连接)
@@ -288,11 +293,13 @@ def network_person_neighbors(
     try:
         driver = _get_driver()
         with driver.session() as s:
-            # 该人员的 1 跳关联(不限方向), 排除自身 与 当前登录用户(「我」)
+            # 该人员的 1 跳关联(不限方向), 排除自身 与 当前登录用户(「我」);
+            # 授权边若已过期(expire_at 早于当前时间)不返回, 避免把过期授权当有效关联
             result = s.run(
                 """
                 MATCH (p:Person {person_id: $pid})-[r]-(n)
                 WHERE NOT (n:Person AND (n.person_id = $pid OR n.name IN $me_names))
+                  AND NOT (r.expire_at IS NOT NULL AND datetime(r.expire_at) < datetime())
                 RETURN labels(n)[0] AS ntype, n AS node, type(r) AS rel, r.name_zh AS rel_zh
                 LIMIT $lim
                 """,
@@ -304,11 +311,16 @@ def network_person_neighbors(
                 rel = rec["rel"]
                 rel_zh = rec["rel_zh"] or ""
                 item = {"type": ntype, "name": n.get("name", "")}
+                # 系统授权关系标记: 非业务事实(权限分发产生), AI 分析不得当作任职/参与
+                if rel in _GRANT_RELATIONS:
+                    item["grant"] = True
+                    item["grant_label"] = rel_zh or RELATION_LABELS.get(rel, rel)
                 if ntype == "Company":
                     item.update({
                         "relation_label": rel_zh or "任职于",
                         "company_name": n.get("name", ""),
                         "company_type": n.get("company_type", ""),
+                        "company_id": n.get("company_id"),
                     })
                 elif ntype == "Project":
                     item.update({
@@ -322,6 +334,7 @@ def network_person_neighbors(
                         "relation_label": rel_zh or RELATION_LABELS.get(rel, rel),
                         "position": n.get("position", ""),
                         "company_name": n.get("company_name", ""),
+                        "person_id": n.get("person_id"),
                     })
                 nodes.append(item)
     except Exception as e:  # noqa: BLE001

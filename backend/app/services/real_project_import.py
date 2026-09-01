@@ -114,17 +114,33 @@ def _cell(row, col) -> str:
     return "" if s.lower() == "nan" else s
 
 
-def _parse_ws(ws) -> list[dict]:
-    """读取工作表首行为列头, 返回 list[dict]。"""
-    headers = []
-    for col in range(1, ws.max_column + 1):
-        h = ws.cell(1, col).value
-        headers.append(str(h).strip() if h else f"__col{col}__")
+# 项目合同关键列(用于自动定位列头行: 兼容首行为标题行「项目合同档案库」的情况)
+_PROJECT_KEYS = {"项目名称", "法人单位", "项目负责人", "甲方单位名称", "项目业主", "合同金额", "行业类别"}
+
+
+def _load_rows(file_bytes: bytes, key_columns: set[str] | None = None) -> list[dict]:
+    """解析 xlsx(openpyxl), 自动定位列头行(首行可能是标题行)。
+
+    取前 5 行中命中关键列名最多的一行作为列头, 数据从其下一行开始。
+    """
+    key_columns = key_columns or _PROJECT_KEYS
+    wb = load_workbook(io.BytesIO(file_bytes), data_only=True)
+    ws = wb.active
+    grid = [[ws.cell(r, c).value for c in range(1, ws.max_column + 1)]
+            for r in range(1, ws.max_row + 1)]
+    if not grid:
+        return []
+
+    best_idx, best_score = 0, -1
+    for i in range(min(5, len(grid))):
+        score = sum(1 for c in grid[i] if str(c).strip() in key_columns)
+        if score > best_score:
+            best_idx, best_score = i, score
+
+    headers = [str(c).strip() or f"__col{j}__" for j, c in enumerate(grid[best_idx])]
     rows = []
-    for r in range(2, ws.max_row + 1):
-        row = {}
-        for i, h in enumerate(headers, start=1):
-            row[h] = ws.cell(r, i).value
+    for r in range(best_idx + 1, len(grid)):
+        row = {headers[j]: grid[r][j] for j in range(len(headers))}
         if any(v is not None and str(v).strip() not in ("", "nan") for v in row.values()):
             rows.append(row)
     return rows
@@ -248,7 +264,7 @@ def _add_project_company(db: Session, project_id: int, company_id: int, role: st
         return
     db.add(ProjectCompany(
         project_id=project_id, company_id=company_id, role=role,
-        joined_at=_parse_dt(joined_at), is_active=True,
+        joined_at=_parse_dt(joined_at) or datetime.datetime.now(), is_active=True,
     ))
 
 
@@ -265,10 +281,14 @@ def _add_project_member(db: Session, project_id: int, person_id: int, role: str,
     ).scalar_one_or_none()
     if exists:
         return
+    dt = _parse_dt(joined_at) or (datetime.datetime.now() if joined_at is None else None)
+    if dt is None:
+        # 提供了非空但无法解析的日期 → 尝试再兜底为项目启动时间不可得时用当前时间
+        dt = datetime.datetime.now()
     db.add(ProjectMember(
         project_id=project_id, person_id=person_id, role=role,
         responsibility=responsibility or None,
-        joined_at=_parse_dt(joined_at), is_active=True,
+        joined_at=dt, is_active=True,
     ))
 
 
@@ -310,10 +330,12 @@ def _ensure_company(db: Session, name: str, company_type: str = "施工",
     return comp.id
 
 
-def _import_one_project(db: Session, proj_rows: list[dict], log: list, errors: list) -> None:
+def _import_one_project(db: Session, proj_rows: list[dict], log: list, errors: list,
+                        skip_enrich: bool = False) -> None:
     """导入单个项目(可能含多份分项合同行): 项目+进度+负责人+业主+法人单位关联+Neo4j同步。
 
     法人单位按该项目行的「法人单位」独立解析(支持不同项目不同法人单位)。
+    skip_enrich=True: 跳过企查查/LLM 补全(批量导入外部渠道不可靠时提速, 只入库源数据)。
     """
     project_name = proj_rows[0]["项目名称"]
     # 法人单位: 取该项目第一行的法人单位(支持多法人单位 Excel)
@@ -326,7 +348,8 @@ def _import_one_project(db: Session, proj_rows: list[dict], log: list, errors: l
                                city=_cell(proj_rows[0], "城市") or "",
                                industry=_cell(proj_rows[0], "行业类别"), log=log)
     # 法人单位信息补全(企查查, 只填空字段)
-    _enrich_company_from_qcc(db, db.get(Company, legal_id), log, errors)
+    if not skip_enrich:
+        _enrich_company_from_qcc(db, db.get(Company, legal_id), log, errors)
     # 最早开工日期作为项目启动日期
     start_dates = [_cell(c, "项目开工日期") for c in proj_rows if _cell(c, "项目开工日期")]
     start_dt = _parse_dt(min(start_dates)) if start_dates else None
@@ -346,10 +369,10 @@ def _import_one_project(db: Session, proj_rows: list[dict], log: list, errors: l
         f"经营模式:{_cell(r0, '经营模式')}; 资金来源:{_cell(r0, '资金来源')}; "
         f"项目级别:{_cell(r0, '项目级别')}; 核算单元:{_cell(r0, '核算单元')}。\n分项合同:\n{contracts_summary}"
     )
-    # 项目分类: 行业类别规则映射 -> 空白/未命中用 AI 分析兜底
+    # 项目分类: 行业类别规则映射 -> 空白/未命中用 AI 分析兜底(批量导入可跳过)
     industry = _cell(r0, "行业类别")
     category = _map_category(industry)
-    if not category:
+    if not category and not skip_enrich:
         category = _ai_classify(project_name, industry, desc)
         if category:
             log.append(f"AI 分类[{project_name[:20]}...] -> {category} (行业类别空白)")
@@ -463,7 +486,8 @@ def _import_one_project(db: Session, proj_rows: list[dict], log: list, errors: l
             log.append(f"复用业主单位[{owner_name}] id={owner.id}"
                        + (f" 补充: {'、'.join(changed)}" if changed else ""))
         # 业主单位信息补全(企查查, 只填空字段: 法定代表人/电话/地址/信用代码等)
-        _enrich_company_from_qcc(db, owner, log, errors)
+        if not skip_enrich:
+            _enrich_company_from_qcc(db, owner, log, errors)
         _add_project_company(db, project_id, owner.id, "owner", _cell(c, "项目开工日期"))
 
         cname = _cell(c, "业主联系人")
@@ -487,7 +511,9 @@ def _import_one_project(db: Session, proj_rows: list[dict], log: list, errors: l
 
     db.flush()
 
-    # ---- 6. Neo4j 图谱同步 ----
+    # ---- 6. Neo4j 图谱同步(批量导入 skip_enrich 时跳过, 由导入后统一重建) ----
+    if skip_enrich:
+        return
     try:
         _p_ext = project.ext_attrs or {}
         sync_project(project_id, project.name, code=project.code or "", status="completed",
@@ -535,16 +561,18 @@ def _import_one_project(db: Session, proj_rows: list[dict], log: list, errors: l
         errors.append(f"Neo4j 同步失败[{project_name[:20]}]: {e}")
 
 
-def import_real_project(db: Session, file_bytes: bytes, entity_type: str = "projects") -> dict:
+def import_real_project(db: Session, file_bytes: bytes, entity_type: str = "projects",
+                        progress=None, skip_enrich: bool = False) -> dict:
     """解析 xlsx 并按「项目名称」分组, 逐个完整导入(公司/人员/项目/关联/图谱)。
 
+    skip_enrich=True: 跳过企查查/LLM 补全, 只入库 Excel 源数据(批量导入提速)。
+
     同一项目名的多行视为分项合同, 合并为同一项目; 不同项目名分别创建项目。
+    progress: 可选回调(stage, imported, updated, skipped, failed, log), 用于后台任务实时进度。
     """
     if entity_type not in ("projects", "project"):
         raise ValueError("不支持的导入类型")
-    wb = load_workbook(io.BytesIO(file_bytes), data_only=True)
-    ws = wb.active
-    rows = _parse_ws(ws)
+    rows = _load_rows(file_bytes, _PROJECT_KEYS)
     if not rows:
         return {"success": False, "message": "Excel 无数据", "imported": 0, "errors": ["无数据"]}
 
@@ -565,13 +593,26 @@ def import_real_project(db: Session, file_bytes: bytes, entity_type: str = "proj
         groups.setdefault(pname, []).append(c)
 
     # ---- 2. 每组独立导入(法人单位按各自项目行解析) ----
-    for pname, proj_rows in groups.items():
+    total_groups = len(groups)
+    for i, (pname, proj_rows) in enumerate(groups.items(), start=1):
+        # 处理前先推送进度(单项目内部含公司信息补全, 可能较慢)
+        if progress:
+            progress(stage=f"正在导入项目 {i}/{total_groups}: {pname[:24]}",
+                     imported=len(log), updated=0, skipped=0,
+                     failed=len(errors), log=f"[{i}/{total_groups}] 开始处理: {pname[:24]}")
         try:
-            _import_one_project(db, proj_rows, log, errors)
+            _import_one_project(db, proj_rows, log, errors, skip_enrich=skip_enrich)
+            # 每项目独立提交: 避免单个失败项目 rollback 清空整批数据
+            db.commit()
         except Exception as e:  # noqa: BLE001
             db.rollback()
             errors.append(f"项目[{pname}]导入失败: {e}")
             log.append(f"项目[{pname}]导入失败: {e}")
+        # 处理后推送
+        if progress:
+            progress(stage=f"已导入 {i}/{total_groups}",
+                     imported=len(log), updated=0, skipped=0,
+                     failed=len(errors), log=log[-1] if log else "")
 
     db.commit()
 

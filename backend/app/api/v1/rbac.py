@@ -14,6 +14,7 @@ from app.services.auth_service import (
 from app.services.rate_limit import (
     check_login_rate_limit, record_login_failure, record_login_success,
 )
+from pydantic import BaseModel, Field
 from app.schemas.rbac import LoginRequest, TokenResponse, UserBrief
 from app.config import settings
 
@@ -96,26 +97,107 @@ async def login(request: Request, data: LoginRequest, db: Session = Depends(get_
 
 
 @router.get("/auth/me", response_model=UserBrief)
-async def get_me(user: dict = Depends(get_current_user)):
-    """获取当前用户信息"""
+async def get_me(user: dict = Depends(get_current_user),
+                 db: Session = Depends(get_db)):
+    """获取当前用户信息(从DB读取完整资料)"""
+    from sqlalchemy import select
+    row = db.execute(
+        select(SysUser).where(SysUser.id == user["user_id"], SysUser.is_deleted == False)
+    ).scalar_one_or_none()
     return UserBrief(
         id=user["user_id"],
         username=user["username"],
-        display_name=user.get("display_name", ""),
-        department_id=user.get("department_id"),
+        display_name=(row.display_name if row else user.get("display_name", "")),
+        email=(row.email if row else None),
+        phone=(row.phone if row else None),
+        department_id=(row.department_id if row else user.get("department_id")),
+        person_id=(row.person_id if row else None),
         roles=user.get("roles", []),
         permissions=user.get("permissions", []),
     )
 
 
+# ── 个人中心: 改资料 / 改密码 ──
+@router.put("/me/profile")
+async def update_my_profile(
+    body: dict,
+    db: Session = Depends(get_db),
+    user: dict = Depends(get_current_user),
+):
+    """当前用户修改自己的资料(显示名/邮箱/手机号)"""
+    from sqlalchemy import select
+    row = db.execute(
+        select(SysUser).where(SysUser.id == user["user_id"], SysUser.is_deleted == False)
+    ).scalar_one_or_none()
+    if not row:
+        raise HTTPException(status_code=404, detail="用户不存在")
+    if body.get("display_name") is not None:
+        row.display_name = str(body["display_name"]).strip() or row.username
+    if body.get("email") is not None:
+        row.email = body["email"] or None
+    if body.get("phone") is not None:
+        row.phone = body["phone"] or None
+    db.commit()
+    # 刷新缓存里的展示名等
+    from app.services.cache_service import cache_service
+    await cache_service.invalidate_user_permissions(row.id)
+    return {"success": True, "message": "ok"}
+
+
+@router.put("/me/password")
+async def change_my_password(
+    body: dict,
+    db: Session = Depends(get_db),
+    user: dict = Depends(get_current_user),
+):
+    """当前用户修改密码(校验旧密码)"""
+    from sqlalchemy import select
+    from app.services.auth_service import verify_password
+    row = db.execute(
+        select(SysUser).where(SysUser.id == user["user_id"], SysUser.is_deleted == False)
+    ).scalar_one_or_none()
+    if not row:
+        raise HTTPException(status_code=404, detail="用户不存在")
+    old_pwd = body.get("old_password", "")
+    if not verify_password(old_pwd, row.password_hash):
+        raise HTTPException(status_code=400, detail="原密码不正确")
+    new_pwd = body.get("new_password", "")
+    _validate_password_strength(new_pwd)
+    row.password_hash = hash_password(new_pwd)
+    db.commit()
+    return {"success": True, "message": "密码修改成功"}
+
+
+class RegisterRequest(BaseModel):
+    username: str = Field(..., min_length=1, max_length=32)
+    password: str = Field(..., min_length=8, max_length=64)
+    display_name: str = Field(default="", max_length=32)
+    email: str = Field(default="", max_length=64)
+    phone: str = Field(default="", max_length=32)
+    department_id: int | None = None
+    role_ids: list[int] = Field(default_factory=list)
+    data_scope_rule: str | None = Field(default=None, description="用户级数据范围:ALL/DEPT_TREE/DEPT_ONLY/OWN/CUSTOM")
+    scope_dept_ids: list[int] = Field(default_factory=list, description="部门范围ID列表")
+
+
+def _validate_scope_rule(rule: str | None) -> str | None:
+    """校验数据范围规则, 非法返回 None。"""
+    if not rule:
+        return None
+    rule = rule.strip().upper()
+    allowed = ("ALL", "DEPT_TREE", "DEPT_ONLY", "OWN", "CUSTOM")
+    return rule if rule in allowed else None
+
+
 @router.post("/auth/register", status_code=status.HTTP_201_CREATED)
 async def register_user(
-    data: LoginRequest,
+    data: RegisterRequest,
     db: Session = Depends(get_db),
     user: dict = Depends(require_permission("api_rbac")),
 ):
-    """注册新用户"""
+    """创建新账号(管理员分发账号): 支持 display_name/email/phone/部门/初始角色/数据范围"""
     from sqlalchemy import select
+    from app.models.rbac import SysUserRole
 
     # 密码强度校验(弱密码拒绝)
     _validate_password_strength(data.password)
@@ -129,10 +211,23 @@ async def register_user(
     new_user = SysUser(
         username=data.username,
         password_hash=hash_password(data.password),
-        display_name=data.username,
+        display_name=data.display_name or data.username,
+        email=data.email or None,
+        phone=data.phone or None,
+        department_id=data.department_id,
     )
+    # 数据范围(默认不启用, 不干扰现有行为)
+    new_user.data_scope_rule = _validate_scope_rule(data.data_scope_rule)
+    if new_user.data_scope_rule:
+        new_user.scope_dept_ids = [d for d in data.scope_dept_ids if d] or None
     db.add(new_user)
     db.commit()
     db.refresh(new_user)
+
+    # 分配初始角色
+    import datetime
+    for rid in data.role_ids:
+        db.add(SysUserRole(user_id=new_user.id, role_id=rid, created_at=datetime.datetime.now()))
+    db.commit()
 
     return {"id": new_user.id, "username": new_user.username}

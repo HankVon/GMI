@@ -1,8 +1,8 @@
 <!-- 公司/单位 360° 商情详情页 -->
 <template>
   <div class="company-detail">
-    <!-- 返回列表(与项目详情页一致) -->
-    <el-page-header @back="router.back()" title="返回列表">
+    <!-- 返回列表(与项目详情页一致): 前台数据中心返回对应列表 tab, 后台保持历史回退 -->
+    <el-page-header @back="goBack" title="返回列表">
       <template #content>
         <span>{{ company.name || "加载中..." }}</span>
       </template>
@@ -12,7 +12,7 @@
     <div class="fgbs-header">
       <div class="fgbs-head-main">
         <h2 class="fgbs-title">{{ company.name || "加载中..." }}</h2>
-        <el-tag type="primary" effect="plain" round size="small" class="fgbs-mark">
+        <el-tag v-if="!isPortal" type="primary" effect="plain" round size="small" class="fgbs-mark">
           <el-icon><Star /></el-icon><span>标记合作</span>
         </el-tag>
         <el-tooltip content="如何标记？" placement="top">
@@ -22,6 +22,7 @@
         <el-button type="primary" size="small" class="fgbs-print" @click="onPrint">
           <el-icon><Printer /></el-icon><span>点击打印</span>
         </el-button>
+        <FavoriteButton entity-type="company" :entity-id="companyId" />
       </div>
 
       <!-- 三张信息小卡: fgbs编号 / 详细地址 / 公司座机 -->
@@ -55,25 +56,66 @@
           </div>
         </div>
       </div>
+
+      <!-- 工商速览(对标建设通业主详情头部) -->
+      <div class="fgbs-ic-bar">
+        <div class="ic-cell">
+          <span class="ic-label">法定代表人</span>
+          <span class="ic-value">{{ icData?.legal_rep || "-" }}</span>
+        </div>
+        <div class="ic-cell">
+          <span class="ic-label">注册资本</span>
+          <span class="ic-value">{{ icData?.registered_capital || "-" }}</span>
+        </div>
+        <div class="ic-cell">
+          <span class="ic-label">成立日期</span>
+          <span class="ic-value">{{ fmtDate(icData?.est_date) }}</span>
+        </div>
+        <div class="ic-cell">
+          <span class="ic-label">统一信用代码</span>
+          <span class="ic-value">{{ company.credit_code || "-" }}</span>
+        </div>
+        <div class="ic-cell">
+          <span class="ic-label">行业</span>
+          <span class="ic-value">{{ company.industry || "-" }}</span>
+        </div>
+        <div class="ic-cell">
+          <span class="ic-label">企业类型</span>
+          <span class="ic-value">{{ company.company_type || "-" }}</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- 单位经营概况(对标业主详情页: 项目数据/维度概览) -->
+    <div class="fgbs-ov-stats">
+      <div class="ov-stat" @click="mainTab='fgbs'">
+        <div class="ov-num">{{ projects.length }}</div>
+        <div class="ov-label">参与项目</div>
+      </div>
+      <div class="ov-stat" @click="mainTab='fgbs'">
+        <div class="ov-num">{{ persons.length }}</div>
+        <div class="ov-label">关联人员</div>
+      </div>
+      <div class="ov-stat" @click="indTab='qual'; mainTab='industry'">
+        <div class="ov-num">{{ qualifications.length }}</div>
+        <div class="ov-label">资质台账</div>
+      </div>
+      <div class="ov-stat" @click="indTab='honor'; mainTab='industry'">
+        <div class="ov-num">{{ honors.length }}</div>
+        <div class="ov-label">荣誉</div>
+      </div>
+      <div class="ov-stat" @click="indTab='bidopen'; mainTab='industry'">
+        <div class="ov-num">{{ bidOpenRecords.length }}</div>
+        <div class="ov-label">开标记录</div>
+      </div>
+      <div class="ov-stat" @click="indTab='credit'; mainTab='industry'">
+        <div class="ov-num">{{ creditRecords.length }}</div>
+        <div class="ov-label">诚信记录</div>
+      </div>
     </div>
 
     <!-- AI分析能力横幅: 标签条 + 更多分析入口 -->
-    <div class="ai-banner">
-      <div class="ai-banner-left">
-        <span class="ai-banner-label">
-          <el-icon><MagicStick /></el-icon><b>AI分析:</b>
-        </span>
-        <span
-          v-for="(c, i) in AI_CHIPS"
-          :key="i"
-          class="ai-chip"
-          @click="openAiChat(c)"
-        >{{ c }}</span>
-      </div>
-      <el-link type="primary" :underline="false" class="ai-more" @click="openAiChat()">
-        更多分析 <el-icon><ArrowRight /></el-icon>
-      </el-link>
-    </div>
+    <AiBanner :chips="AI_CHIPS" @select-chip="openAiChat" @more="openAiChat()" />
 
     <!-- 主选项卡: 商情分析报告 / fgbs大数据 -->
     <div class="fgbs-tabs">
@@ -87,6 +129,11 @@
         :class="{ 'is-active': mainTab === 'fgbs' }"
         @click="mainTab = 'fgbs'"
       >单位信息</div>
+      <div
+        class="fgbs-tab"
+        :class="{ 'is-active': mainTab === 'industry' }"
+        @click="mainTab = 'industry'"
+      >行业数据</div>
     </div>
 
     <!-- 商情分析报告视图 -->
@@ -163,16 +210,13 @@
         <div class="biz-foot">
           <span class="biz-note">* 以下为当前账号可阅内容数据, 不代表当前企业全部数据</span>
         </div>
-        <div class="bg-grid">
-          <div class="bg-row" v-for="it in baseInfoItems" :key="it.label">
-            <span class="bg-label">{{ it.label }}:</span>
-            <span class="bg-value">{{ it.value || "-" }}</span>
-            <div v-if="it.note" class="bg-note" :title="`原因：${it.note.reason}\n建议：${it.note.suggest}`">
-              <el-icon><InfoFilled /></el-icon>
-              <span>{{ it.note.reason }}（{{ it.note.suggest }}）</span>
-            </div>
-          </div>
-        </div>
+        <entity-kv-grid
+          :items="baseInfoKvItems"
+          :columns="1"
+          variant="grid"
+          fallback="-"
+          class="bg-kv"
+        />
       </div>
 
       <!-- 公关路径 -->
@@ -182,7 +226,7 @@
             <span class="biz-key">公关路径</span>
             <span class="biz-desc">基于单位人员关系, 梳理最有效的触达与公关建议</span>
           </div>
-          <el-button type="primary" size="small" plain @click="toggleGraph">
+          <el-button type="primary" size="small" @click="toggleGraph">
             <el-icon><MagicStick /></el-icon>{{ graphVisible ? "收起人脉图谱" : "展开人脉图谱" }}
           </el-button>
         </div>
@@ -231,122 +275,41 @@
 
       </div>
 
-      <!-- 情报关联: 中标网络 / 知识图谱关系 / 人脉边 -->
-      <div v-show="subTab === 'rel'" class="biz-section">
+      <!-- 情报关联: 可争取意向 -->
+      <div v-if="subTab === 'rel'" class="biz-section">
         <div class="biz-head">
           <div class="biz-head-text">
             <span class="biz-key">情报关联</span>
-            <span class="biz-desc">中标市场四象限 + 开放域知识关系 + 人脉边，洞察本单位的市场位势与关系网络</span>
+            <span class="biz-desc">围绕本单位业务 / 地域能力，系统定期匹配的可争取意向</span>
           </div>
-          <el-button type="primary" size="small" plain @click="loadRelData">
+          <el-button type="primary" size="small" @click="loadWatchedIntents">
             <el-icon><Refresh /></el-icon>刷新
           </el-button>
         </div>
-        <div class="biz-foot">
-          <span class="biz-note">* 中标网络基于公告解析，知识关系来自 LLM 开放域抽取，人脉边来自项目/人员聚合</span>
-        </div>
 
-        <!-- 1. 中标网络四象限 -->
-        <div class="rel-block">
+        <!-- 0. 有望争取的意向（机会视角） -->
+        <div class="rel-block intent-watch-block">
           <div class="rel-block-title">
-            <el-icon><Trophy /></el-icon>
-            <span>中标网络</span>
-            <el-tag v-if="bidNet" size="small" type="info">{{ bidNet.stats?.bids_won ?? 0 }} 次中标 / {{ bidNet.stats?.bids_purchased ?? 0 }} 次发标</el-tag>
+            <el-icon><Aim /></el-icon>
+            <span>有望争取的意向</span>
+            <el-tag v-if="watchedIntents.length" size="small" type="danger" effect="dark">{{ watchedIntents.length }} 条</el-tag>
           </div>
-          <div v-loading="bidNetLoading" class="rel-grid">
-            <div class="rel-cell">
-              <div class="rel-cell-title">潜在业主(中标对象)</div>
-              <div v-if="bidNet?.potential_owners?.length" class="rel-list">
-                <div class="rel-item" v-for="o in bidNet.potential_owners" :key="o.company_id">
-                  <span class="rel-name" @click="goCompany(o.company_id)">{{ o.name }}</span>
-                  <el-tag size="small" type="success">{{ o.bid_count }}次</el-tag>
-                </div>
-              </div>
-              <div v-else class="rel-empty">暂无同名中标记录</div>
+          <div v-loading="watchedLoading" class="watched-list">
+            <div v-if="!watchedIntents.length && !watchedLoading" class="watched-empty">
+              暂无可争取的意向。系统会定期扫意向公告，匹配本单位业务/地域能力。
             </div>
-            <div class="rel-cell">
-              <div class="rel-cell-title">同地域潜在业主</div>
-              <div v-if="bidNet?.region_owners?.length" class="rel-list">
-                <div class="rel-item" v-for="(o, i) in bidNet.region_owners" :key="i">
-                  <span class="rel-name" :class="{ 'is-link': o.company_id }" @click="o.company_id && goCompany(o.company_id)">{{ o.purchaser }}</span>
-                  <el-tag size="small" type="warning">{{ o.count }}次</el-tag>
-                </div>
+            <div v-for="it in watchedIntents" :key="it.id" class="watched-item" @click="openIntentDetail(it.id)">
+              <div class="watched-head">
+                <el-tag size="small" :type="viaType(it.matched_via)" effect="plain">{{ viaLabel(it.matched_via) }}</el-tag>
+                <span class="watched-title">{{ it.title }}</span>
+                <span class="watched-date">{{ (it.published_at || '').slice(0, 10) }}</span>
               </div>
-              <div v-else class="rel-empty">暂无同地域业主线索</div>
-            </div>
-            <div class="rel-cell">
-              <div class="rel-cell-title">竞对(同场竞标)</div>
-              <div v-if="bidNet?.competitors?.length" class="rel-list">
-                <div class="rel-item" v-for="o in bidNet.competitors" :key="o.company_id">
-                  <span class="rel-name" @click="goCompany(o.company_id)">{{ o.name }}</span>
-                  <el-tag size="small" type="danger">{{ o.bid_count }}次</el-tag>
-                </div>
+              <div class="watched-reason">
+                <el-icon><InfoFilled /></el-icon>
+                <span>{{ it.match_reason }}</span>
               </div>
-              <div v-else class="rel-empty">暂无竞对数据</div>
-            </div>
-            <div class="rel-cell">
-              <div class="rel-cell-title">潜在合作方(供应商)</div>
-              <div v-if="bidNet?.potential_suppliers?.length" class="rel-list">
-                <div class="rel-item" v-for="o in bidNet.potential_suppliers" :key="o.company_id">
-                  <span class="rel-name" @click="goCompany(o.company_id)">{{ o.name }}</span>
-                  <el-tag size="small" type="primary">{{ o.bid_count }}次</el-tag>
-                </div>
-              </div>
-              <div v-else class="rel-empty">暂无合作方数据</div>
             </div>
           </div>
-        </div>
-
-        <!-- 2. 知识图谱关系 -->
-        <div class="rel-block">
-          <div class="rel-block-title">
-            <el-icon><Share /></el-icon>
-            <span>知识图谱关系</span>
-          </div>
-          <el-table v-if="kgRels.length" :data="kgRels" size="small" v-loading="kgRelLoading" max-height="280">
-            <el-table-column label="方向" width="60">
-              <template #default="{ row }">
-                <el-tag size="small" :type="row.direction === 'out' ? 'primary' : 'success'">
-                  {{ row.direction === 'out' ? '出' : '入' }}
-                </el-tag>
-              </template>
-            </el-table-column>
-            <el-table-column label="关系" width="140">
-              <template #default="{ row }"><el-tag size="small" type="warning">{{ row.relation_zh || row.relation }}</el-tag></template>
-            </el-table-column>
-            <el-table-column label="对方实体" min-width="200" show-overflow-tooltip>
-              <template #default="{ row }">{{ row.direction === 'out' ? (row.target?.name ?? '-') : (row.source?.name ?? '-') }}</template>
-            </el-table-column>
-            <el-table-column prop="confidence" label="置信度" width="90" />
-            <el-table-column prop="evidence" label="证据" min-width="220" show-overflow-tooltip />
-          </el-table>
-          <div v-else-if="!kgRelLoading" class="rel-empty">暂无开放域关系 — 可在知识图谱页粘贴文本抽取入库</div>
-        </div>
-
-        <!-- 3. 人脉边 -->
-        <div class="rel-block">
-          <div class="rel-block-title">
-            <el-icon><Connection /></el-icon>
-            <span>人脉边</span>
-          </div>
-          <el-table v-if="netEdges.length" :data="netEdges" size="small" v-loading="netEdgeLoading" max-height="280">
-            <el-table-column label="方向" width="60">
-              <template #default="{ row }">
-                <el-tag size="small" :type="row.direction === 'out' ? 'primary' : 'success'">
-                  {{ row.direction === 'out' ? '出' : '入' }}
-                </el-tag>
-              </template>
-            </el-table-column>
-            <el-table-column label="关系" width="140">
-              <template #default="{ row }"><el-tag size="small" type="warning">{{ row.rel_zh || row.rel }}</el-tag></template>
-            </el-table-column>
-            <el-table-column label="对方实体" min-width="200" show-overflow-tooltip>
-              <template #default="{ row }">{{ row.other?.type }}·{{ row.other?.name }}</template>
-            </el-table-column>
-            <el-table-column prop="weight" label="权重" width="70" />
-            <el-table-column prop="evidence" label="证据(项目/来源)" min-width="240" show-overflow-tooltip />
-          </el-table>
-          <div v-else-if="!netEdgeLoading" class="rel-empty">暂无聚合人脉边 — 可在人脉库页点击「初始化/重建人脉库」</div>
         </div>
       </div>
     </div>
@@ -364,7 +327,7 @@
                   <el-button size="small" @click="cancelEdit">取消</el-button>
                   <el-button type="primary" size="small" :loading="saving" @click="saveEdit">保存</el-button>
                 </div>
-                <div v-else class="header-actions">
+                <div v-else-if="!isPortal" class="header-actions">
                   <el-button :loading="enrichingFree" size="small" @click="enrichFree">免费补全</el-button>
                   <el-button :loading="enriching" type="warning" size="small" @click="enrich">企查查补全</el-button>
                   <el-button type="primary" size="small" @click="startEdit">编辑</el-button>
@@ -372,16 +335,13 @@
               </div>
             </template>
 
-            <div v-if="!editing" class="info-grid">
-              <div class="info-cell" v-for="item in displayItems" :key="item.label">
-                <div class="info-label">{{ item.label }}</div>
-                <div class="info-value">{{ item.value ?? "-" }}</div>
-                <div v-if="item.note" class="info-note" :title="`原因：${item.note.reason}\n建议：${item.note.suggest}`">
-                  <el-icon><InfoFilled /></el-icon>
-                  <span>不可探查：{{ item.note.reason }}</span>
-                </div>
-              </div>
-            </div>
+            <entity-kv-grid
+              v-if="!editing"
+              :items="displayKvItems"
+              :columns="2"
+              variant="grid"
+              fallback="-"
+            />
 
             <!-- 全部联系方式(可选主要) -->
             <div v-if="!editing && extraContacts.length" class="extra-contacts">
@@ -395,7 +355,7 @@
                 </el-tag>
                 <span class="extra-value">{{ c.value }}</span>
                 <span v-if="c.isPrimary" class="extra-primary-tag">主要</span>
-                <el-button v-else link type="primary" size="small" @click="setPrimary(c)">设为主</el-button>
+                <el-button v-else-if="!isPortal" link type="primary" size="small" @click="setPrimary(c)">设为主</el-button>
               </div>
             </div>
 
@@ -415,6 +375,17 @@
               <el-divider content-position="left">扩展字段（法定代表人 / 注册资本 / 联系方式等）</el-divider>
               <DynamicForm ref="dynamicFormRef" entity-type="company" v-model="editFormDynamic" mode="edit" />
             </el-form>
+          </el-card>
+
+          <!-- 经营范围(对标业主详情页) -->
+          <el-card v-if="businessScope" class="section-card" shadow="never">
+            <template #header>
+              <div class="section-header">
+                <span class="section-title">经营范围</span>
+                <span class="section-sub">工商登记的经营范围（可据此判断业务能力边界）</span>
+              </div>
+            </template>
+            <div class="biz-scope-text">{{ businessScope }}</div>
           </el-card>
 
           <!-- 参与项目 -->
@@ -440,13 +411,18 @@
               <el-table-column prop="role" label="角色" width="120">
                 <template #default="{ row }">{{ companyRoleLabel[row.role] || row.role }}</template>
               </el-table-column>
+              <el-table-column prop="evidence" label="证据来源" width="100">
+                <template #default="{ row }">
+                  <el-tag :type="evidenceTagType(row.evidence)" size="small">{{ row.evidence || '-' }}</el-tag>
+                </template>
+              </el-table-column>
               <el-table-column width="36" align="right">
                 <template #default>
                   <el-icon class="row-arrow"><ArrowRight /></el-icon>
                 </template>
               </el-table-column>
             </el-table>
-            <el-empty v-else description="暂无参与项目" :image-size="60" />
+            <el-empty v-else description="暂无参与/中标项目" :image-size="60" />
           </el-card>
         </el-col>
 
@@ -483,6 +459,183 @@
           </el-card>
         </el-col>
       </el-row>
+    </div>
+
+    <!-- 行业数据视图: 资质/荣誉/诚信/工商风险/开标记录(对标建设通分项查询) -->
+    <div v-show="mainTab === 'industry'" class="fgbs-panel">
+      <div class="fgbs-subtabs">
+        <div class="fgbs-subtab" :class="{ 'is-active': indTab === 'qual' }" @click="indTab = 'qual'">资质台账</div>
+        <div class="fgbs-subtab" :class="{ 'is-active': indTab === 'honor' }" @click="indTab = 'honor'">荣誉</div>
+        <div class="fgbs-subtab" :class="{ 'is-active': indTab === 'credit' }" @click="indTab = 'credit'">诚信记录</div>
+        <div class="fgbs-subtab" :class="{ 'is-active': indTab === 'ic' }" @click="indTab = 'ic'">工商与风险</div>
+        <div class="fgbs-subtab" :class="{ 'is-active': indTab === 'bidopen' }" @click="indTab = 'bidopen'">开标记录</div>
+      </div>
+
+      <!-- 资质台账 -->
+      <div v-show="indTab === 'qual'" class="ind-section">
+        <div class="ind-head">
+          <div class="ind-head-text">
+            <span class="ind-key">资质台账</span>
+            <span class="ind-desc">单位资质等级、发证机关与有效期，含失效预警</span>
+          </div>
+          <el-select v-model="qualFilter.category" size="small" clearable placeholder="按大类筛选" style="width: 180px" @change="loadQualifications">
+            <el-option v-for="c in qualCategories" :key="c" :label="c" :value="c" />
+          </el-select>
+        </div>
+        <div class="ind-stat-cards" v-if="Object.keys(qualStatusCount).length">
+          <div class="ind-stat-card" v-for="(cnt, st) in qualStatusCount" :key="st">
+            <div class="ind-stat-num">{{ cnt }}</div>
+            <div class="ind-stat-label">{{ statusZh(st) }}</div>
+          </div>
+        </div>
+        <el-table v-if="qualifications.length" :data="qualifications" size="small" border>
+          <el-table-column prop="category" label="资质大类" width="110" />
+          <el-table-column prop="professional" label="专业" min-width="130" />
+          <el-table-column prop="level" label="等级" width="90" />
+          <el-table-column prop="cert_no" label="证书编号" width="140" />
+          <el-table-column prop="issue_org" label="发证机关" min-width="130" />
+          <el-table-column label="有效期" width="180">
+            <template #default="{ row }">{{ fmtDate(row.valid_from) }} ~ {{ fmtDate(row.valid_to) }}</template>
+          </el-table-column>
+          <el-table-column label="状态" width="80">
+            <template #default="{ row }">
+              <el-tag :type="indStatusTagType(row.status)" size="small">{{ statusZh(row.status) }}</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="来源" min-width="110">
+            <template #default="{ row }">
+              <a v-if="row.source_url" :href="row.source_url" target="_blank" class="ind-src">{{ row.source }}</a>
+              <span v-else class="ind-src-plain">{{ row.source }}</span>
+            </template>
+          </el-table-column>
+        </el-table>
+        <el-empty v-else description="暂无资质台账" :image-size="60" />
+      </div>
+
+      <!-- 荣誉 -->
+      <div v-show="indTab === 'honor'" class="ind-section">
+        <div class="ind-head">
+          <div class="ind-head-text">
+            <span class="ind-key">荣誉</span>
+            <span class="ind-desc">获奖情况（奖项/等级/授予机关/日期）</span>
+          </div>
+        </div>
+        <el-table v-if="honors.length" :data="honors" size="small" border>
+          <el-table-column prop="title" label="荣誉标题" min-width="220" />
+          <el-table-column prop="level" label="等级" width="100" />
+          <el-table-column prop="org" label="授予机关" min-width="150" />
+          <el-table-column label="获奖日期" width="110">
+            <template #default="{ row }">{{ fmtDate(row.honored_at) }}</template>
+          </el-table-column>
+          <el-table-column label="来源" min-width="110">
+            <template #default="{ row }">
+              <a v-if="row.source_url" :href="row.source_url" target="_blank" class="ind-src">{{ row.source }}</a>
+              <span v-else class="ind-src-plain">{{ row.source }}</span>
+            </template>
+          </el-table-column>
+        </el-table>
+        <el-empty v-else description="暂无荣誉记录" :image-size="60" />
+      </div>
+
+      <!-- 诚信记录 -->
+      <div v-show="indTab === 'credit'" class="ind-section">
+        <div class="ind-head">
+          <div class="ind-head-text">
+            <span class="ind-key">诚信记录</span>
+            <span class="ind-desc">不良行为 / 双随机公示，来源为官方公开渠道</span>
+          </div>
+        </div>
+        <el-table v-if="creditRecords.length" :data="creditRecords" size="small" border>
+          <el-table-column prop="title" label="记录标题" min-width="240" />
+          <el-table-column prop="org" label="公示机关" min-width="150" />
+          <el-table-column label="公示日期" width="110">
+            <template #default="{ row }">{{ fmtDate(row.published_at) }}</template>
+          </el-table-column>
+          <el-table-column label="来源" min-width="110">
+            <template #default="{ row }">
+              <a v-if="row.source_url" :href="row.source_url" target="_blank" class="ind-src">{{ row.source }}</a>
+              <span v-else class="ind-src-plain">{{ row.source }}</span>
+            </template>
+          </el-table-column>
+        </el-table>
+        <el-empty v-else description="暂无诚信记录" :image-size="60" />
+      </div>
+
+      <!-- 工商与风险 -->
+      <div v-show="indTab === 'ic'" class="ind-section">
+        <div class="ind-head">
+          <div class="ind-head-text">
+            <span class="ind-key">工商与风险</span>
+            <span class="ind-desc">工商基本信息、股东/投资/分支结构与司法风险</span>
+          </div>
+        </div>
+        <template v-if="icData">
+          <div class="ind-grid">
+            <div class="ind-row"><span class="ind-label">法定代表人:</span><span class="ind-value">{{ icData.legal_rep || "-" }}</span></div>
+            <div class="ind-row"><span class="ind-label">注册资本:</span><span class="ind-value">{{ icData.registered_capital || "-" }}</span></div>
+            <div class="ind-row"><span class="ind-label">成立日期:</span><span class="ind-value">{{ fmtDate(icData.est_date) }}</span></div>
+          </div>
+          <div class="ind-blocks">
+            <div v-if="icData.shareholders?.length" class="ind-block">
+              <div class="ind-block-title">股东</div>
+              <div v-for="(s, i) in icData.shareholders" :key="i" class="ind-item">{{ s.name }}（{{ s.ratio || "-" }}）</div>
+            </div>
+            <div v-if="icData.investments?.length" class="ind-block">
+              <div class="ind-block-title">对外投资</div>
+              <div v-for="(s, i) in icData.investments" :key="i" class="ind-item">{{ s.name }}（{{ s.ratio || "-" }}）</div>
+            </div>
+            <div v-if="icData.branches?.length" class="ind-block">
+              <div class="ind-block-title">分支机构</div>
+              <div v-for="(s, i) in icData.branches" :key="i" class="ind-item">{{ s.name }}</div>
+            </div>
+          </div>
+        </template>
+        <el-empty v-else description="暂无工商信息（可通过企查查补全）" :image-size="60" />
+        <el-divider content-position="left">司法与经营风险</el-divider>
+        <el-table v-if="legalRisks.length" :data="legalRisks" size="small" border>
+          <el-table-column label="类型" width="100">
+            <template #default="{ row }">{{ riskTypeZh(row.risk_type) }}</template>
+          </el-table-column>
+          <el-table-column prop="title" label="标题" min-width="200" />
+          <el-table-column prop="court" label="法院/机关" min-width="130" />
+          <el-table-column label="涉案金额" width="110">
+            <template #default="{ row }">{{ row.amount != null ? Number(row.amount).toLocaleString() : "-" }}</template>
+          </el-table-column>
+          <el-table-column label="日期" width="110">
+            <template #default="{ row }">{{ fmtDate(row.published_at) }}</template>
+          </el-table-column>
+        </el-table>
+        <el-empty v-else description="暂无司法风险记录" :image-size="60" />
+      </div>
+
+      <!-- 开标记录 -->
+      <div v-show="indTab === 'bidopen'" class="ind-section">
+        <div class="ind-head">
+          <div class="ind-head-text">
+            <span class="ind-key">开标记录</span>
+            <span class="ind-desc">本单位的投标场次（报价/下浮率/开标时间）</span>
+          </div>
+        </div>
+        <el-table v-if="bidOpenRecords.length" :data="bidOpenRecords" size="small" border>
+          <el-table-column prop="notice_title" label="公告标题" min-width="220">
+            <template #default="{ row }">
+              <a v-if="row.notice_url" :href="row.notice_url" target="_blank" class="ind-src">{{ row.notice_title || "-" }}</a>
+              <span v-else>{{ row.notice_title || "-" }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column prop="role" label="角色" width="90" />
+          <el-table-column label="报价" width="120">
+            <template #default="{ row }">{{ row.amount != null ? Number(row.amount).toLocaleString() : "-" }}</template>
+          </el-table-column>
+          <el-table-column label="下浮率" width="100">
+            <template #default="{ row }">{{ row.discount_rate != null ? (Number(row.discount_rate) * 100).toFixed(2) + "%" : "-" }}</template>
+          </el-table-column>
+          <el-table-column label="开标时间" width="120">
+            <template #default="{ row }">{{ fmtDate(row.opened_at) }}</template>
+          </el-table-column>
+        </el-table>
+        <el-empty v-else description="暂无开标记录" :image-size="60" />
+      </div>
     </div>
 
     <!-- AI 分析师抽屉(复用网络路径组件; 传入当前公司作为目标) -->
@@ -560,24 +713,32 @@
 </template>
 
 <script setup lang="ts">
+defineOptions({ name: "CompanyDetail" });
 import { ref, computed, onMounted } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { ElMessage } from "element-plus";
 import {
   Star, QuestionFilled, Printer, Document, Location, Phone,
   MagicStick, ArrowRight, Briefcase, Refresh, Trophy, Share, Connection,
-  Right, OfficeBuilding, FolderOpened, InfoFilled,
+  Right, OfficeBuilding, FolderOpened, InfoFilled, Aim,
 } from "@element-plus/icons-vue";
 import dayjs from "dayjs";
 import api from "@/api";
+import FavoriteButton from "@/components/FavoriteButton.vue";
 import DynamicForm from "@/components/DynamicForm.vue";
 import AiAnalystChat from "@/components/AiAnalystChat.vue";
 import PersonCard from "@/components/PersonCard.vue";
 import ProjectCard from "@/components/ProjectCard.vue";
 import CompanyGraph from "@/components/CompanyGraph.vue";
+import AiBanner from "@/components/detail/AiBanner.vue";
+import EntityKvGrid from "@/components/detail/EntityKvGrid.vue";
+import { useNavBase } from "@/utils/navBase";
+import { usePortalMode } from "@/utils/portalMode";
 
 const route = useRoute();
 const router = useRouter();
+const { navTo } = useNavBase();
+const { isPortal } = usePortalMode();
 const companyId = Number(route.params.id);
 
 const company = ref<any>({});
@@ -615,51 +776,123 @@ const companyPath = ref<CompanyPathData>({ found: false, steps: [], message: "" 
 const pathLoading = ref(false);
 
 /* ─────────── 选项卡 ─────────── */
-const mainTab = ref<"analysis" | "fgbs">("analysis");
+const mainTab = ref<"analysis" | "fgbs" | "industry">("analysis");
 const subTab = ref<"biz" | "bg" | "pr" | "rel">("biz");
 
-/* ─────────── 情报关联(中标网络 / 知识关系 / 人脉边) ─────────── */
-const bidNet = ref<any>(null);
-const bidNetLoading = ref(false);
-const kgRels = ref<any[]>([]);
-const kgRelLoading = ref(false);
-const netEdges = ref<any[]>([]);
-const netEdgeLoading = ref(false);
+/* ─────────── 行业数据(资质/荣誉/诚信/工商风险/开标) ─────────── */
+const indTab = ref<"qual" | "honor" | "credit" | "ic" | "bidopen">("qual");
+const qualFilter = ref<{ category: string }>({ category: "" });
+const qualifications = ref<any[]>([]);
+const qualCategories = ref<string[]>([]);
+const qualStatusCount = ref<Record<string, number>>({});
+const honors = ref<any[]>([]);
+const creditRecords = ref<any[]>([]);
+const icData = ref<any>(null);
+const legalRisks = ref<any[]>([]);
+const bidOpenRecords = ref<any[]>([]);
 
-async function loadBidNet() {
-  bidNetLoading.value = true;
-  try {
-    const res: any = await api.get(`/bids/network/company/${companyId}`);
-    bidNet.value = res || null;
-  } catch { bidNet.value = null; }
-  finally { bidNetLoading.value = false; }
+function fmtDate(v: any): string {
+  if (!v) return "-";
+  return dayjs(v).format("YYYY-MM-DD");
 }
-async function loadKgRels() {
-  kgRelLoading.value = true;
-  try {
-    const res: any = await api.get(`/knowledge/relations/company/${companyId}`);
-    kgRels.value = res?.items || [];
-  } catch { kgRels.value = []; }
-  finally { kgRelLoading.value = false; }
+function statusZh(s: string): string {
+  return { active: "有效", expiring: "临期", expired: "已失效" }[s] || s || "-";
 }
-async function loadNetEdges() {
-  netEdgeLoading.value = true;
-  try {
-    const res: any = await api.get(`/biz-network/edges/company/${companyId}`);
-    netEdges.value = res?.items || [];
-  } catch { netEdges.value = []; }
-  finally { netEdgeLoading.value = false; }
+function indStatusTagType(s: string): string {
+  return { active: "success", expiring: "warning", expired: "danger" }[s] || "info";
 }
-function loadRelData() {
-  loadBidNet();
-  loadKgRels();
-  loadNetEdges();
+function riskTypeZh(t: string): string {
+  const m: Record<string, string> = {
+    lawsuit: "诉讼", judgment: "裁判文书", executed: "被执行", penalty: "行政处罚",
+    abnormal: "经营异常", pledge: "股权出质", announcement: "法院公告",
+  };
+  return m[t] || t;
+}
+
+async function loadQualifications() {
+  try {
+    const res: any = await api.get(`/companies/${companyId}/qualifications`, {
+      params: { category: qualFilter.value.category || undefined, page_size: 100 },
+    });
+    const d = res?.data || {};
+    qualifications.value = d.items || [];
+    qualStatusCount.value = d.status_count || {};
+    qualCategories.value = d.categories || [];
+  } catch { /* ignore */ }
+}
+async function loadHonors() {
+  try {
+    const res: any = await api.get(`/companies/${companyId}/honors`, { params: { page_size: 100 } });
+    honors.value = res?.data?.items || [];
+  } catch { /* ignore */ }
+}
+async function loadCreditRecords() {
+  try {
+    const res: any = await api.get(`/companies/${companyId}/credit-records`, { params: { page_size: 100 } });
+    creditRecords.value = res?.data?.items || [];
+  } catch { /* ignore */ }
+}
+async function loadIc() {
+  try {
+    const res: any = await api.get(`/companies/${companyId}/ic`);
+    icData.value = res?.data || null;
+  } catch { icData.value = null; }
+}
+async function loadLegalRisks() {
+  try {
+    const res: any = await api.get(`/companies/${companyId}/legal-risks`, { params: { page_size: 100 } });
+    legalRisks.value = res?.data?.items || [];
+  } catch { /* ignore */ }
+}
+async function loadBidOpenRecords() {
+  try {
+    const res: any = await api.get(`/companies/${companyId}/bid-open-records`, { params: { page_size: 100 } });
+    bidOpenRecords.value = res?.data?.items || [];
+  } catch { /* ignore */ }
+}
+
+/* ─────────── 情报关联: 可争取意向（定期扫意向公告，匹配本单位业务/地域能力） ─────────── */
+const watchedIntents = ref<any[]>([]);
+const watchedLoading = ref(false);
+async function loadWatchedIntents() {
+  watchedLoading.value = true;
+  try {
+    const res: any = await api.get(`/intent/related-by-company/${companyId}`);
+    watchedIntents.value = res?.items || [];
+  } catch { watchedIntents.value = []; }
+  finally { watchedLoading.value = false; }
+}
+function openIntentDetail(id: number) {
+  // 跳转意向信息页 + 打开详情（与 IntentList 详情弹窗交互保持一致）
+  router.push({ path: navTo("/intents"), query: { open: String(id) } });
+}
+function viaLabel(v: string): string {
+  if (v === "tender_match") return "业务匹配";
+  if (v === "project_unit") return "业主相关";
+  if (v === "publisher") return "采购主体";
+  return v || "关联";
+}
+function viaType(v: string): string {
+  if (v === "tender_match") return "warning";
+  if (v === "project_unit") return "danger";
+  if (v === "publisher") return "primary";
+  return "info";
+}
+
+/** 返回: 优先回上一级浏览历史(用户刚看过的那一页), 无历史(如直接刷新)时兜底回数据中心列表 */
+function goBack() {
+  const back = window.history.state?.back;
+  if (back) {
+    router.back();
+  } else {
+    router.push("/site/data-center/companies");
+  }
 }
 
 /** 跳转其他单位详情 */
 function goCompany(id?: number | null) {
   if (!id) return;
-  router.push(`/workspace/companies/${id}`);
+  router.push(navTo(`/companies/${id}`));
 }
 
 /* ─────────── AI 入口 ─────────── */
@@ -789,8 +1022,9 @@ function buildAiFallback(preset?: string): any {
 }
 
 const companyRoleLabel: Record<string, string> = {
-  builder: "建设单位", design: "设计单位", construction: "施工单位",
-  supervisor: "监理单位", investor: "投资方", other: "其他",
+  owner: "业主", constructor: "施工", partner: "合作伙伴", builder: "建设单位",
+  design: "设计", designer: "设计", supervisor: "监理", construction: "施工",
+  investor: "投资方", client: "业主", contractor: "施工", supplier: "供应商", other: "其他",
 };
 
 const editFormRef = ref<any>(null);
@@ -808,9 +1042,12 @@ function prNodeTypeLabel(t: string): string {
 function statusTagType(s: string): string {
   return { active: "primary", suspended: "warning", completed: "success", cancelled: "danger" }[s] || "info";
 }
-function goProject(id: number) { router.push(`/workspace/projects/${id}`); }
-function goPerson(id: number) { router.push(`/workspace/persons/${id}`); }
-function viewNetwork(id: number) { router.push(`/workspace/network/${id}`); }
+function evidenceTagType(e: string): string {
+  return { "中标项目": "warning", "参与+中标": "danger", "成员项目": "info", "参与项目": "primary" }[e] || "info";
+}
+function goProject(id: number) { router.push(navTo(`/projects/${id}`)); }
+function goPerson(id: number) { router.push(navTo(`/persons/${id}`)); }
+function viewNetwork(id: number) { router.push(navTo(`/network/${id}`)); }
 
 /** 公关路径内嵌人脉图谱的展开/收起 */
 const graphVisible = ref(true);
@@ -835,6 +1072,10 @@ function openAddressMap() {
 const companyLandline = computed(() => {
   const ext = company.value.ext_attrs || {};
   return ext.company_phone || ext.phone || ext.landline || ext.contact_phone || "";
+});
+const businessScope = computed(() => {
+  const ext = company.value.ext_attrs || {};
+  return ext.business_scope || ext.scope || "";
 });
 
 const baseInfoItems = computed(() => {
@@ -978,6 +1219,24 @@ async function setPrimary(c: any) {
   } catch { /* 拦截器 */ }
 }
 
+/** displayItems → EntityKvGrid 契约(展示态与标讯详情页共用同一组件与样式) */
+const displayKvItems = computed(() =>
+  (displayItems.value as any[]).map((item) => ({
+    label: item.label,
+    field: { displayText: item.value ?? '', isGated: false },
+    note: item.note || null,
+  })),
+);
+
+/** baseInfoItems → EntityKvGrid 契约(商机面板基础信息) */
+const baseInfoKvItems = computed(() =>
+  (baseInfoItems.value as any[]).map((item) => ({
+    label: item.label,
+    field: { displayText: item.value ?? '', isGated: false },
+    note: item.note || null,
+  })),
+);
+
 const displayItems = computed(() => {
   const ext = company.value.ext_attrs || {};
   const builtin = [
@@ -1072,7 +1331,7 @@ async function enrichFree() {
   enrichingFree.value = true;
   try {
     const res: any = await api.post(`/companies/${companyId}/enrich-free`, null, { timeout: 180000 });
-    if (res && (res.success || res.data)) {
+    if (res && res.success === true) {
       const updated: string[] = res?.data?.updated || [];
       const createdFields: string[] = res?.data?.created_fields || [];
       let detail = "免费补全成功";
@@ -1119,7 +1378,7 @@ async function enrich() {
   enriching.value = true;
   try {
     const res: any = await api.post(`/companies/${companyId}/enrich`);
-    if (res && (res.success || res.data)) {
+    if (res && res.success === true) {
       ElMessage.success("企查查数据补全成功");
       loadCompany();
       loadDynamicFields();
@@ -1137,8 +1396,16 @@ onMounted(() => {
   loadDynamicFields();
   loadCategories();
   loadStats();
-  loadCompanyPath();
-  loadRelData();
+  // 前台数据中心: 用户可能未关联本人节点, 自动调用人脉路径会 400 弹错, 改为按需加载
+  if (!isPortal.value) loadCompanyPath();
+  loadWatchedIntents();
+  // 行业数据(资质/荣誉/诚信/工商风险/开标)
+  loadQualifications();
+  loadHonors();
+  loadCreditRecords();
+  loadIc();
+  loadLegalRisks();
+  loadBidOpenRecords();
 });
 </script>
 
@@ -1181,6 +1448,62 @@ onMounted(() => {
 .fgbs-head-spacer { flex: 1; }
 .fgbs-print { border-radius: 14px; }
 .fgbs-print :deep(.el-icon) { margin-right: 3px; }
+
+/* 工商速览(对标建设通业主详情头部) */
+.fgbs-ic-bar {
+  margin-top: 12px;
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 10px;
+  background: #f7f9fc;
+  border: 1px solid #e9edf6;
+  border-radius: 8px;
+  padding: 12px 16px;
+}
+.ic-cell { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.ic-label { font-size: 12px; color: #8a919f; }
+.ic-value {
+  font-size: 13px;
+  font-weight: 600;
+  color: #1f2329;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 单位经营概况统计条(对标业主详情页: 项目数据/维度概览) */
+.fgbs-ov-stats {
+  margin-top: 12px;
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 12px;
+}
+.ov-stat {
+  background: #fff;
+  border: 1px solid #e9edf6;
+  border-radius: 8px;
+  padding: 12px 8px;
+  text-align: center;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+.ov-stat:hover { border-color: #2979ff; box-shadow: 0 4px 12px rgba(41, 121, 255, 0.1); }
+.ov-num { font-size: 22px; font-weight: 700; color: #2979ff; line-height: 1.2; }
+.ov-label { margin-top: 4px; font-size: 12px; color: #8a919f; }
+
+/* 经营范围 */
+.biz-scope-text {
+  font-size: 13px;
+  line-height: 2;
+  color: #303133;
+  background: #f7f9fc;
+  border-radius: 6px;
+  padding: 14px 16px;
+  max-height: 260px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
 
 /* 三张信息小卡 */
 .fgbs-info-cards {
@@ -1236,63 +1559,49 @@ onMounted(() => {
   color: #2979ff;
 }
 
-/* ─── AI分析能力横幅 ─── */
-.ai-banner {
-  margin-top: 14px;
-  background: linear-gradient(90deg, #eef4ff 0%, #f7faff 100%);
-  border: 1px solid #dde7fa;
-  border-radius: 6px;
-  padding: 10px 16px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
+/* ─── 统一关系网络视图 ─── */
+.rel-overview { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 18px; }
+.overview-chip {
+  display: flex; align-items: center; gap: 8px; padding: 8px 14px; border-radius: 10px;
+  background: #f4f8ff; border: 1px solid #e3ecff; cursor: pointer; transition: all .15s;
 }
-.ai-banner-left {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 8px;
-  flex: 1;
-  min-width: 0;
-}
-.ai-banner-label {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  color: #2979ff;
-  font-size: 14px;
-  flex-shrink: 0;
-  margin-right: 4px;
-}
-.ai-banner-label :deep(.el-icon) { font-size: 14px; }
-.ai-banner-label b { font-weight: 700; }
-.ai-chip {
-  display: inline-block;
-  padding: 4px 12px;
-  border-radius: 14px;
+.overview-chip:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(41, 121, 255, 0.12); }
+.overview-chip.is-empty { background: #fafbfc; border-color: #eef0f4; }
+.overview-chip.is-empty .chip-num { color: #c0c4cc; }
+.chip-num { font-size: 18px; font-weight: 700; color: #2979ff; min-width: 20px; text-align: center; }
+.chip-label { font-size: 12px; color: #4b5264; }
+.rel-group { margin-bottom: 20px; }
+.rel-group-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.rel-group-title { font-size: 14px; font-weight: 600; color: #303133; }
+.rel-group-desc { font-size: 12px; color: #a3adc0; }
+.rel-empty-line { color: #c0c4cc; font-size: 12px; padding: 10px 0; border-bottom: 1px dashed #eef0f4; }
+.rel-item-lg { padding: 8px 12px; margin-bottom: 6px; border-radius: 8px; transition: background .15s; }
+.rel-item-lg:hover { background: #f8fafc; }
+.rel-evidence { color: #909399; font-size: 12px; flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rel-conf { color: #909399; font-size: 12px; }
+
+/* ─── 被意向盯上（人脉网络反向标注） ─── */
+.intent-watch-block {
   background: #fff;
-  border: 1px solid #dde7fa;
-  color: #4b6cb7;
-  font-size: 12.5px;
-  cursor: pointer;
-  transition: all 0.18s ease;
-  user-select: none;
+  border: 1px solid #eef1f8;
+  border-left: 3px solid #f56c6c;
+  border-radius: 8px;
+  box-shadow: 0 1px 2px rgba(30, 60, 114, 0.04);
+  padding: 14px 16px;
+  margin-bottom: 16px;
 }
-.ai-chip:hover {
-  background: #2979ff;
-  border-color: #2979ff;
-  color: #fff;
-  transform: translateY(-1px);
-  box-shadow: 0 2px 6px rgba(41, 121, 255, 0.2);
+.watched-list { display: flex; flex-direction: column; gap: 8px; }
+.watched-empty { color: #a3adc0; font-size: 12px; padding: 8px 0; }
+.watched-item {
+  background: #ffffff; border: 1px solid #eef1f8; border-radius: 8px; padding: 10px 12px;
+  cursor: pointer; transition: box-shadow .15s, border-color .15s;
 }
-.ai-more {
-  font-size: 13px;
-  flex-shrink: 0;
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-}
+.watched-item:hover { box-shadow: 0 3px 10px rgba(30, 60, 114, 0.07); border-color: #ffd9c2; }
+.watched-head { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.watched-title { color: #1f2d3d; font-weight: 500; flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.watched-date { color: #a3adc0; font-size: 12px; flex-shrink: 0; }
+.watched-reason { display: flex; align-items: center; gap: 4px; color: #f56c6c; font-size: 12px; margin-top: 6px; }
+.watched-reason .el-icon { font-size: 12px; }
 
 /* ─── 主选项卡(商情分析报告 / fgbs大数据) ─── */
 .fgbs-tabs {
@@ -1356,6 +1665,109 @@ onMounted(() => {
   border-radius: 2px;
 }
 
+/* ─────────── 行业数据(资质/荣誉/诚信/工商风险/开标) ─────────── */
+.ind-section {
+  padding-top: 14px;
+}
+.ind-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+.ind-head-text {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+.ind-key {
+  font-size: 15px;
+  font-weight: 600;
+  color: #1f2329;
+}
+.ind-desc {
+  font-size: 12px;
+  color: #8a919f;
+}
+.ind-stat-cards {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+.ind-stat-card {
+  flex: 1;
+  max-width: 150px;
+  background: #f5f7fa;
+  border: 1px solid #e4e7ed;
+  border-radius: 6px;
+  padding: 10px 14px;
+  text-align: center;
+}
+.ind-stat-num {
+  font-size: 22px;
+  font-weight: 700;
+  color: #2979ff;
+}
+.ind-stat-label {
+  margin-top: 2px;
+  font-size: 12px;
+  color: #606266;
+}
+.ind-src {
+  color: #2979ff;
+  text-decoration: none;
+  font-size: 12px;
+}
+.ind-src:hover { text-decoration: underline; }
+.ind-src-plain {
+  font-size: 12px;
+  color: #8a919f;
+}
+.ind-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px 24px;
+  padding: 12px 0;
+}
+.ind-row {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+}
+.ind-label {
+  color: #8a919f;
+  font-size: 13px;
+  flex-shrink: 0;
+}
+.ind-value {
+  color: #1f2329;
+  font-size: 13px;
+  font-weight: 500;
+}
+.ind-blocks {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+  margin-top: 8px;
+}
+.ind-block {
+  background: #fafbfc;
+  border: 1px solid #ebeef5;
+  border-radius: 6px;
+  padding: 10px 12px;
+}
+.ind-block-title {
+  font-size: 12px;
+  color: #606266;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+.ind-item {
+  font-size: 13px;
+  color: #1f2329;
+  line-height: 1.8;
+}
+
 /* ─── 商机 / 背景 / 公关 三段共享 ─── */
 .biz-section {
   background: linear-gradient(180deg, #f8fbff 0%, #ffffff 100%);
@@ -1371,7 +1783,15 @@ onMounted(() => {
   margin-bottom: 10px;
 }
 .biz-head-text { display: flex; align-items: baseline; gap: 10px; flex: 1; min-width: 0; }
-.biz-key { font-size: 16px; font-weight: 600; color: #1f2d3d; flex-shrink: 0; }
+.biz-key {
+  font-size: 16px;
+  font-weight: 700;
+  color: #1f2d3d;
+  flex-shrink: 0;
+  padding-left: 10px;
+  border-left: 3px solid #2979ff;
+  line-height: 1.4;
+}
 .biz-desc { font-size: 13px; color: #909399; line-height: 1.5; }
 .biz-foot {
   text-align: right;
@@ -1457,19 +1877,8 @@ onMounted(() => {
 .drawer-item-name { font-size: 14px; font-weight: 600; color: #1f2d3d; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .drawer-item-sub { font-size: 12.5px; color: #909399; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-/* 公司背景 */
-.bg-grid {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 10px 24px;
-  background: #fff;
-  border-radius: 6px;
-  padding: 16px 20px;
-  border: 1px solid #e9edf6;
-}
-.bg-row { font-size: 13.5px; color: #303133; padding: 4px 0; }
-.bg-label { color: #909399; margin-right: 6px; }
-.bg-value { color: #303133; font-weight: 500; }
+/* 公司背景: 基础信息已改用公共组件 EntityKvGrid(见 .bg-kv) */
+.bg-kv { background: #fff; border-radius: 6px; padding: 16px 20px; border: 1px solid #e9edf6; }
 
 /* ─── 到公司的真实人脉路径链 ─── */
 .pr-path {
@@ -1588,7 +1997,6 @@ onMounted(() => {
 .section-header { display: flex; justify-content: space-between; align-items: center; }
 .section-title { font-weight: 600; font-size: 16px; color: #303133; position: relative; padding-left: 12px; }
 .section-title::before { content: ""; position: absolute; left: 0; top: 50%; transform: translateY(-50%); width: 4px; height: 16px; background: #2979ff; border-radius: 2px; }
-.info-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; background: #ebeef5; border: 1px solid #ebeef5; border-radius: 4px; overflow: hidden; }
 .extra-contacts { margin-top: 16px; border: 1px dashed #d6e4ff; border-radius: 8px; padding: 12px 14px; background: #f8fbff; }
 .extra-contacts-title { font-size: 13px; font-weight: 600; color: #1f2d3d; margin-bottom: 8px; display: flex; align-items: center; gap: 8px; }
 .extra-sub { font-size: 11px; color: #c0c4cc; font-weight: normal; }
@@ -1597,34 +2005,6 @@ onMounted(() => {
 .extra-kind { width: 42px; text-align: center; }
 .extra-value { flex: 1; color: #303133; }
 .extra-primary-tag { color: #2979ff; font-size: 12px; font-weight: 600; }
-.info-cell { background: #fff; padding: 14px 16px; display: flex; flex-direction: column; gap: 6px; }
-.info-label { font-size: 13px; color: #909399; font-weight: 500; }
-.info-value { font-size: 14px; color: #303133; line-height: 1.5; word-break: break-all; }
-.info-note {
-  display: inline-flex;
-  align-items: flex-start;
-  gap: 4px;
-  font-size: 12px;
-  color: #b8860b;
-  background: #fffbe6;
-  border: 1px solid #f5d78e;
-  border-radius: 4px;
-  padding: 4px 8px;
-  line-height: 1.4;
-  cursor: help;
-}
-.info-note :deep(.el-icon) { font-size: 13px; margin-top: 1px; flex-shrink: 0; }
-.bg-note {
-  display: inline-flex;
-  align-items: flex-start;
-  gap: 4px;
-  font-size: 11.5px;
-  color: #b8860b;
-  margin-top: 3px;
-  line-height: 1.4;
-  cursor: help;
-}
-.bg-note :deep(.el-icon) { font-size: 12px; margin-top: 1px; flex-shrink: 0; }
 .edit-form { padding-top: 8px; }
 
 .clickable-table :deep(.el-table__row) { cursor: pointer; transition: background-color 0.2s ease; }
@@ -1654,6 +2034,121 @@ onMounted(() => {
 /* 响应式: 屏幕窄时三张信息卡改为单列 */
 @media (max-width: 900px) {
   .fgbs-info-cards { grid-template-columns: 1fr; }
+  .fgbs-ov-stats { grid-template-columns: repeat(3, 1fr); }
   .bg-grid { grid-template-columns: 1fr; }
 }
+@media (max-width: 520px) {
+  .fgbs-ov-stats { grid-template-columns: repeat(2, 1fr); }
+}
+
+/* ============================================================
+   视觉提质 · 勃艮第红机构风(参考女娲人工智能学院官网)
+   统一残留蓝色 hardcode → 红系, 章节标题改为杂志化竖条
+   ============================================================ */
+.company-detail {
+  background: var(--ssm-bg);
+  border-radius: 12px;
+  padding: 4px 0 8px;
+}
+
+/* 顶部主信息卡 + 红色顶边 */
+.fgbs-header {
+  background: var(--ssm-card-bg);
+  border: 1px solid var(--ssm-border);
+  border-top: 3px solid var(--ssm-primary);
+  border-radius: var(--ssm-radius);
+  box-shadow: var(--ssm-shadow);
+  padding: 20px 22px 18px;
+  margin-bottom: 16px;
+}
+.fgbs-title { font-size: 24px; font-weight: 700; letter-spacing: 0.01em; color: var(--ssm-text-main); }
+.fgbs-info-card {
+  background: var(--ssm-bg);
+  border: 1px solid var(--ssm-border);
+  border-radius: var(--ssm-radius);
+  padding: 14px 16px;
+}
+.fgbs-info-icon { color: var(--ssm-primary); }
+.fgbs-info-label { color: var(--ssm-text-secondary); font-size: 12.5px; }
+.fgbs-info-value { color: var(--ssm-text-main); font-size: 15px; font-weight: 600; }
+
+/* 经营概况统计条 → 红系 */
+.fgbs-ov-stats { gap: 10px; }
+.ov-stat {
+  background: var(--ssm-card-bg);
+  border: 1px solid var(--ssm-border);
+  border-radius: var(--ssm-radius);
+  padding: 14px 8px;
+}
+.ov-stat:hover { border-color: var(--ssm-primary); box-shadow: var(--ssm-shadow-hover); }
+.ov-num { color: var(--ssm-primary); font-family: Georgia, serif; }
+.ov-label { color: var(--ssm-text-secondary); }
+.biz-scope-text {
+  background: var(--ssm-bg);
+  border: 1px dashed var(--ssm-hairline);
+  color: var(--ssm-text-main);
+}
+
+/* 章节标题: 红色竖条 + 深色字(杂志化) */
+.section-title { color: var(--ssm-text-main) !important; }
+.section-title::before { background: var(--ssm-primary) !important; width: 4px; height: 18px; border-radius: 2px; }
+
+/* fgbs section-card 提质 */
+.section-card {
+  border: 1px solid var(--ssm-border) !important;
+  border-radius: var(--ssm-radius) !important;
+  box-shadow: var(--ssm-shadow) !important;
+  overflow: hidden;
+}
+.section-card :deep(.el-card__header) {
+  background: #fcfbfa;
+  border-bottom: 1px solid var(--ssm-hairline);
+  padding: 14px 18px;
+}
+.section-card :deep(.el-card__body) { padding: 16px 18px; }
+
+/* 链接/表头悬停 → 红系 */
+.link-name { color: var(--ssm-primary) !important; }
+.clickable-table :deep(.el-table__row:hover > td.el-table__cell) { background-color: var(--ssm-primary-soft) !important; }
+.clickable-table :deep(.el-table__row:hover td.el-table__cell:first-child) { box-shadow: inset 3px 0 0 var(--ssm-primary) !important; }
+.clickable-table :deep(.el-table__row:hover) .link-name { color: var(--ssm-primary-dark) !important; text-decoration: underline; text-underline-offset: 3px; }
+.row-arrow { color: #c8c2bc !important; }
+.clickable-table :deep(.el-table__row:hover) .row-arrow { color: var(--ssm-primary) !important; transform: translateX(5px); }
+.rel-name { color: var(--ssm-primary) !important; }
+.member-relation-link {
+  border: 1px solid var(--ssm-primary-soft) !important;
+  background: var(--ssm-primary-soft) !important;
+  color: var(--ssm-primary) !important;
+}
+.member-relation-link:hover { background: var(--ssm-primary) !important; color: #fff !important; border-color: var(--ssm-primary) !important; }
+
+/* 有望争取的意向 卡片提质 */
+.intent-watch-block {
+  background: var(--ssm-card-bg) !important;
+  border: 1px solid var(--ssm-border) !important;
+  border-left: 3px solid var(--ssm-primary) !important;
+  border-radius: var(--ssm-radius);
+  box-shadow: var(--ssm-shadow);
+  padding: 16px 18px;
+  margin-bottom: 16px;
+}
+.rel-block-title { font-size: 16px; font-weight: 700; color: var(--ssm-text-main); display: flex; align-items: center; gap: 8px; }
+.rel-block-title .el-icon { color: var(--ssm-primary); }
+.watched-item {
+  border: 1px solid var(--ssm-border);
+  border-radius: var(--ssm-radius);
+  padding: 12px 14px;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+}
+.watched-item:hover {
+  border-color: var(--ssm-primary-light);
+  box-shadow: var(--ssm-shadow-hover);
+  transform: translateY(-2px);
+}
+.watched-title { color: var(--ssm-text-main); font-weight: 600; }
+
+/* 单元格提质 */
+.extra-contacts { border: 1px dashed var(--ssm-primary-soft) !important; background: var(--ssm-primary-soft) !important; }
+.extra-primary-tag { color: var(--ssm-primary) !important; }
+.extra-contact-item { border-bottom: 1px dashed var(--ssm-hairline) !important; }
 </style>

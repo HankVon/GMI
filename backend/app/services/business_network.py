@@ -264,16 +264,18 @@ def init_network(db: Session) -> dict:
 # ④ 招标匹配: 招标/意向线索 × 人脉实体
 # ---------------------------------------------------------------------------
 def match_tenders(db: Session, clue_id: Optional[int] = None, limit: int = 100) -> dict:
-    """把招标/意向线索(web_clue)与人员/单位匹配推荐。
+    """把招标/意向线索(web_clue + intent_notice)与人员/单位匹配推荐。
 
     匹配逻辑(加权):
       - 专长匹配: 线索标题含人员专长(skill) → 人员 高优先级
       - 类别匹配: 线索标题含 项目类别关键词 → 相关人员/单位
       - 区域匹配: 线索地域与单位省份/城市一致
       - 单位匹配: 线索关键词命中单位业务关键词(company_type/行业)
-    写入 tender_match 表(幂等: 同 clue+entity 更新)。
+      - 意向单位匹配: intent_notice.matched_entity.unit 直接匹配 company 库
+    写入 tender_match 表(幂等: 同 clue/intent+entity 更新, intent_id 区分来源)。
     """
     from app.models.web_clue import WebClue
+    from app.models.intent_notice import IntentNotice
 
     # 候选线索: 意向/招标类
     intent_kw = ("采购意向", "意向公开", "采购需求", "招标", "采购公告", "中标", "勘察", "地质灾害", "生态修复")
@@ -285,6 +287,13 @@ def match_tenders(db: Session, clue_id: Optional[int] = None, limit: int = 100) 
         stmt = stmt.where(WebClue.id == clue_id)
     clues = db.execute(stmt).scalars().all()
 
+    # 意向通知也参与匹配(intent_id 区分来源)
+    istmt = select(IntentNotice).where(
+        IntentNotice.is_deleted == False,
+        IntentNotice.title != None,
+    ).order_by(IntentNotice.id.desc()).limit(200)
+    intents = db.execute(istmt).scalars().all()
+
     persons = db.execute(select(Person).where(Person.is_deleted == False)).scalars().all()
     companies = db.execute(select(Company).where(Company.is_deleted == False)).scalars().all()
     person_skills = {}
@@ -293,28 +302,19 @@ def match_tenders(db: Session, clue_id: Optional[int] = None, limit: int = 100) 
 
     matched = 0
     now = datetime.now()
-    for clue in clues:
-        title = clue.title or ""
-        if not any(k in title for k in intent_kw):
-            continue
-        meta = clue.meta if isinstance(clue.meta, dict) else {}
-        region = meta.get("regionName") or clue.region or ""
-        amount = str(meta.get("budget") or "")
-        # 推荐有效期: 优先线索截止时间(expireTime), 否则发布时间+60天, 再否则抓取时间+60天
-        valid_until = _compute_valid_until(meta, clue.published_at or clue.fetched_at or now)
+
+    def _match_one(title: str, region: str, amount: str, valid_until,
+                   clue_id: Optional[int], intent_id: Optional[int]):
+        nonlocal matched
         best_person, best_company = None, None
         best_p_score, best_c_score = 0.0, 0.0
-
         # 人员: 专长命中
         for p in persons:
             skills = person_skills.get(p.id, [])
             score = 0.0
-            reason = []
             for s in skills:
                 if s and s in title:
                     score += 0.6
-                    reason.append(f"专长「{s}」")
-            # 单位区域匹配加分
             if score and p.company_id:
                 comp = _company_of(db, p.company_id)
                 if comp and region and (comp.province or "") and comp.province in region:
@@ -336,18 +336,48 @@ def match_tenders(db: Session, clue_id: Optional[int] = None, limit: int = 100) 
                 best_c_score, best_company = score, c
 
         if best_person and best_p_score >= 0.6:
-            _upsert_tender_match(db, clue.id, title, "person", best_person.id,
-                                 best_person.name or "", "skill", f"专长匹配(得分{best_p_score:.2f})",
-                                 best_p_score, region, amount, valid_until)
+            _upsert_tender_match(db, clue_id=clue_id, intent_id=intent_id, title=title,
+                                 entity_type="person", entity_id=best_person.id,
+                                 entity_name=best_person.name or "", match_type="skill",
+                                 match_reason=f"专长匹配(得分{best_p_score:.2f})",
+                                 score=best_p_score, region=region, amount=amount,
+                                 valid_until=valid_until)
             matched += 1
         if best_company and best_c_score >= 0.6:
-            _upsert_tender_match(db, clue.id, title, "company", best_company.id,
-                                 best_company.name or "", "category", f"业务匹配(得分{best_c_score:.2f})",
-                                 best_c_score, region, amount, valid_until)
+            _upsert_tender_match(db, clue_id=clue_id, intent_id=intent_id, title=title,
+                                 entity_type="company", entity_id=best_company.id,
+                                 entity_name=best_company.name or "", match_type="category",
+                                 match_reason=f"业务匹配(得分{best_c_score:.2f})",
+                                 score=best_c_score, region=region, amount=amount,
+                                 valid_until=valid_until)
             matched += 1
 
+    for clue in clues:
+        title = clue.title or ""
+        if not any(k in title for k in intent_kw):
+            continue
+        meta = clue.meta if isinstance(clue.meta, dict) else {}
+        region = meta.get("regionName") or clue.region or ""
+        amount = str(meta.get("budget") or "")
+        valid_until = _compute_valid_until(meta, clue.published_at or clue.fetched_at or now)
+        _match_one(title, region, amount, valid_until, clue_id=clue.id, intent_id=None)
+
+    # 仅全局匹配(clue_id 未指定)时处理意向通知; 指定单条线索时只匹配该线索本身,
+    # 否则 /biz-network/tenders/match?clue_id=X 会写入大量 clue_id=None 的意向行,
+    # 导致前端按 clue_id 查询该标讯匹配时永远为空(P1-5 面板看似坏掉)。
+    if clue_id is None:
+        for it in intents:
+            title = it.title or ""
+            if not any(k in title for k in intent_kw):
+                continue
+            region = it.region or ""
+            amount = str(int(it.amount)) if it.amount is not None else ""
+            # 有效期: 发布时间+90天(意向公开有效期较长)
+            valid_until = (it.published_at or now) + timedelta(days=90)
+            _match_one(title, region, amount, valid_until, clue_id=None, intent_id=it.id)
+
     db.commit()
-    return {"matched": matched, "candidates": len(clues)}
+    return {"matched": matched, "candidates": len(clues) + len(intents)}
 
 
 def _compute_valid_until(meta: dict, base: Optional[datetime] = None) -> Optional[datetime]:
@@ -393,26 +423,219 @@ def refresh_match_validity(db: Session, now: Optional[datetime] = None) -> dict:
     return {"total": len(matches), "expired": expired, "updated": updated}
 
 
-def _upsert_tender_match(db, clue_id, title, etype, eid, ename, mtype, reason, score, region, amount,
-                         valid_until=None):
-    """幂等写 tender_match。"""
+def _upsert_tender_match(db, clue_id=None, intent_id=None, title="", entity_type="person",
+                         entity_id=0, entity_name="", match_type="skill", match_reason="",
+                         score=0.0, region="", amount="", valid_until=None):
+    """幂等写 tender_match(clue_id / intent_id 二选一, 唯一键区分来源)。"""
+    conds = [
+        TenderMatch.entity_type == entity_type,
+        TenderMatch.entity_id == entity_id,
+        TenderMatch.is_deleted == False,
+    ]
+    if intent_id is not None:
+        conds.append(TenderMatch.intent_id == intent_id)
+        conds.append(TenderMatch.clue_id.is_(None))
+    else:
+        conds.append(TenderMatch.clue_id == clue_id)
     exists = db.execute(
-        select(TenderMatch).where(
-            TenderMatch.clue_id == clue_id,
-            TenderMatch.entity_type == etype, TenderMatch.entity_id == eid,
-            TenderMatch.is_deleted == False,
-        ).limit(1)
+        select(TenderMatch).where(*conds).limit(1)
     ).scalar_one_or_none()
     if exists:
         exists.score = score
-        exists.match_reason = reason
+        exists.match_reason = match_reason
         if valid_until:
             exists.valid_until = valid_until
     else:
         db.add(TenderMatch(
-            clue_id=clue_id, title=title[:500], entity_type=etype, entity_id=eid,
-            entity_name=ename, match_type=mtype, match_reason=reason,
+            clue_id=clue_id, intent_id=intent_id, title=title[:500],
+            entity_type=entity_type, entity_id=entity_id,
+            entity_name=entity_name, match_type=match_type, match_reason=match_reason,
             score=score, region=region or None, amount=amount or None, status="new",
             valid_until=valid_until,
         ))
     db.flush()
+
+    # 意向匹配实体 → Neo4j 建立 (Intent)-[:RELATES_TO]->(Person|Company) 边, 供意向专属子图
+    if intent_id is not None and entity_id:
+        try:
+            from app.services import neo4j_sync as _nsync
+            _nsync.register_open_relation("RELATES_TO", "相关于")
+            _nsync.sync_intent(intent_id=intent_id, title=title)
+            _nsync.sync_open_relation(
+                source_type="intent", source_id=intent_id, source_name=title,
+                target_type=entity_type, target_id=int(entity_id), target_name=entity_name,
+                relation_key="RELATES_TO", relation_zh="相关于",
+                confidence=min(1.0, float(score or 0.8)),
+                evidence=f"意向匹配:{match_type}",
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
+
+# ---------------------------------------------------------------------------
+# 意向关联实体批量构建: 从意向标题/原文提取真实单位名/人名, 关联到存量公司/人员
+# ---------------------------------------------------------------------------
+# 单位名后缀(用于从意向标题/正文提取「业主/相关单位」, 匹配存量 company)
+_INTENT_ORG_SUFFIXES = (
+    "有限公司", "有限责任公司", "股份有限公司", "公司", "研究院", "设计院", "勘察院",
+    "工程局", "集团", "医院", "学校", "大学", "中心", "研究所", "事务所", "分公司",
+    "管理处", "管理局", "水利局", "自然资源局", "镇政府", "乡政府", "街道办事处", "委员会",
+)
+# 姓名正则(用于从原文提取「XX负责/联系人」等, 匹配存量 person)
+_INTENT_PERSON_RE = re.compile(r"([\u4e00-\u9fa5]{2,4})(?:先生|女士|同志)?(?:负责|联系人|联系|经办|电话|联系电话)")
+
+
+def _extract_org_names(text: str) -> list:
+    """从标题/原文提取可能的单位名片段(去重保序, 上限 20)。
+    包含: 1) 后缀正则匹配; 2) 括号/书名号包住的机构名(常出现在公告标题)。"""
+    if not text:
+        return []
+    names = []
+    # 1) 后缀正则: 取后缀前的一串中文(2~30 字)作为候选单位名
+    for suffix in _INTENT_ORG_SUFFIXES:
+        for m in re.finditer(r"([\u4e00-\u9fa5]{2,30})" + suffix, text):
+            cand = m.group(0).strip()
+            if cand and cand not in names:
+                names.append(cand)
+            if len(names) >= 20:
+                return names
+    # 2) 括号/书名号包住的机构名: 形如「(四川省...)」「《...》」
+    for m in re.finditer(r"[「《(](\S{4,40}?(?:厅|局|委|部|公司|院|中心|厂|集团))[\)」》]", text):
+        cand = m.group(1).strip()
+        if cand and cand not in names:
+            names.append(cand)
+    return names[:20]
+
+
+def _fuzzy_match_company(cand: str, comp_by_name: dict) -> Company | None:
+    """单位名模糊匹配: 全名 → 包含匹配 → 关键词重叠(去掉通用词后比对)。"""
+    cand = cand.strip()
+    if not cand:
+        return None
+    if cand in comp_by_name:
+        return comp_by_name[cand]
+    # 包含匹配
+    for cname, cc in comp_by_name.items():
+        if not cname:
+            continue
+        if cand in cname or (len(cand) >= 4 and cname in cand):
+            return cc
+    # 关键词重叠: 拆分候选与存量名, 去除通用词后比对核心词
+    stop = {"省", "市", "县", "区", "公司", "有限责任", "集团", "股份", "有限", "中国", "四川"}
+    cand_core = "".join(c for c in cand if c not in stop)[:8]
+    if len(cand_core) < 4:
+        return None
+    for cname, cc in comp_by_name.items():
+        if not cname or len(cname) < 4:
+            continue
+        cname_core = "".join(c for c in cname if c not in stop)[:8]
+        if cand_core and cand_core == cname_core:
+            return cc
+    return None
+
+
+def build_intent_relations(db: Session, intent_id: Optional[int] = None,
+                           limit: Optional[int] = None) -> dict:
+    """为意向批量建立真实关联实体(单位/人员), 写入 tender_match + Neo4j 图谱。
+
+    数据来源(确定性, 非 LLM 拍脑袋):
+      1) 意向标题/原文中的单位名(按后缀正则提取) → 匹配存量 company(全名/包含匹配)
+      2) 意向标题/原文中的「XXX负责/联系人」人名 → 匹配存量 person(全名/包含匹配)
+    这些实体即意向详情页「涉及单位/角色」「关联实体」的兜底真实数据,
+    使未跑 AI 研判的意向也能展示真实关联单位。
+
+    幂等: 已关联的跳过。intent_id 给定时只处理该意向, 否则处理全部非删除意向。
+    返回 {"linked_companies", "linked_persons", "skipped", "failed"}
+    """
+    from app.models.intent_notice import IntentNotice
+    if intent_id is not None:
+        it = db.get(IntentNotice, intent_id)
+        intents = [it] if it and not it.is_deleted else []
+    else:
+        q = select(IntentNotice).where(IntentNotice.is_deleted == False)
+        if limit:
+            q = q.limit(limit)
+        intents = db.execute(q).scalars().all()
+
+    # 存量索引
+    companies = db.execute(
+        select(Company).where(Company.is_deleted == False)
+    ).scalars().all()
+    persons = db.execute(
+        select(Person).where(Person.is_deleted == False)
+    ).scalars().all()
+    comp_by_name = {}
+    for c in companies:
+        comp_by_name.setdefault((c.name or "").strip(), c)
+    person_by_name = {}
+    for p in persons:
+        person_by_name.setdefault((p.name or "").strip(), p)
+
+    linked_c = linked_p = skipped = failed = 0
+    for it in intents:
+        title = it.title or ""
+        raw = (it.raw_text or "") or ""
+        text = title + "\n" + raw
+        if not text.strip():
+            skipped += 1
+            continue
+        # 已有 intent_id 关联(避免重复)
+        existing = {
+            (m.entity_type, m.entity_id)
+            for m in db.execute(
+                select(TenderMatch).where(
+                    TenderMatch.intent_id == it.id, TenderMatch.is_deleted == False
+                )
+            ).scalars().all()
+        }
+        valid_until = (it.published_at or datetime.now()) + timedelta(days=90)
+        region = it.region or ""
+        amount = str(int(it.amount)) if it.amount is not None else ""
+        # 候选单位名: 正文提取 + 发布部门(dept, 政务公告常为政府机构)
+        candidates = _extract_org_names(text)
+        if it.dept and it.dept.strip():
+            candidates.insert(0, it.dept.strip())
+        seen_cands = set()
+        try:
+            # 1) 单位: 模糊匹配(全名/包含/核心词重叠) → 存量 company
+            for cand in candidates:
+                if cand in seen_cands:
+                    continue
+                seen_cands.add(cand)
+                c = _fuzzy_match_company(cand, comp_by_name)
+                if c is None:
+                    continue
+                key = ("company", c.id)
+                if key in existing:
+                    continue
+                existing.add(key)
+                _upsert_tender_match(
+                    db, clue_id=None, intent_id=it.id, title=title,
+                    entity_type="company", entity_id=c.id, entity_name=c.name or "",
+                    match_type="owner", match_reason="标题/原文/发布部门模糊匹配业主单位",
+                    score=0.85, region=region, amount=amount, valid_until=valid_until,
+                )
+                linked_c += 1
+            # 2) 人员: 「XXX负责/联系人」人名 → 存量全名匹配
+            for m in _INTENT_PERSON_RE.finditer(text):
+                pname = m.group(1).strip()
+                p = person_by_name.get(pname)
+                if p is None:
+                    continue
+                key = ("person", p.id)
+                if key in existing:
+                    continue
+                existing.add(key)
+                _upsert_tender_match(
+                    db, clue_id=None, intent_id=it.id, title=title,
+                    entity_type="person", entity_id=p.id, entity_name=p.name or "",
+                    match_type="contact", match_reason="标题/原文提取联系人",
+                    score=0.8, region=region, amount=amount, valid_until=valid_until,
+                )
+                linked_p += 1
+        except Exception:  # noqa: BLE001
+            db.rollback()
+            failed += 1
+        db.commit()
+    return {"linked_companies": linked_c, "linked_persons": linked_p,
+            "skipped": skipped, "failed": failed, "intents": len(intents)}

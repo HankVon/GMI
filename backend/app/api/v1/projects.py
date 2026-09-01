@@ -1,7 +1,7 @@
 """项目管理 API"""
 import io
 from typing import Optional
-from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, UploadFile, status, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Query, UploadFile, status, Request
 from sqlalchemy.orm import Session
 from sqlalchemy import select, func, and_, or_, cast, Float, exists, update
 
@@ -291,11 +291,20 @@ async def list_projects(
                     )
                 )
 
-    user_dept = user.get("department_id")
-    user_roles = user.get("roles", [])
-    # admin 全量可见; 普通用户只看本部门及未归属部门的项目
-    if user_dept and "admin" not in user_roles:
-        stmt = stmt.where((Project.department_id == user_dept) | (Project.department_id.is_(None)))
+    # ── 数据范围过滤(分发权限): 启用数据范围的用户按配置过滤;
+    #    未启用则保持现有行为(admin 全量, 普通用户只看本部门及未归属部门项目)。
+    from app.services.data_scope_service import resolve_scope, scope_filter
+    scope = resolve_scope(db, user, "project")
+    cond = scope_filter(scope, Project, "project",
+                        dept_id_col=Project.department_id,
+                        user_id=user.get("user_id"))
+    if cond is not None:
+        stmt = stmt.where(cond)
+    else:
+        user_dept = user.get("department_id")
+        user_roles = user.get("roles", [])
+        if user_dept and "admin" not in user_roles:
+            stmt = stmt.where((Project.department_id == user_dept) | (Project.department_id.is_(None)))
 
     # ── 排序: 内置字段白名单; 动态字段仅允许 number/money 用 JSON_EXTRACT 排序 ──
     order_col = None
@@ -424,26 +433,42 @@ async def create_project(
 @router.post("/import-real")
 async def import_real_project_endpoint(
     file: UploadFile = File(...),
+    deep_enrich: bool = Form(True),
     db: Session = Depends(get_db),
     user: dict = Depends(require_permission("api_project_crud")),
 ):
     """导入真实项目 Excel: 完整导入(公司/人员/项目/关联/Neo4j 图谱)。
 
-    请求: multipart/form-data, file=xxx.xlsx
+    请求: multipart/form-data, file=xxx.xlsx, deep_enrich=true/false
+      deep_enrich=false: 快速导入, 跳过 AI 分类与单位信息补全(大文件提速, 只入库源数据+图谱)。
     列要求(首行表头): 项目名称/法人单位/项目负责人/项目负责人联系电话/合同金额/
       项目开工日期/甲方单位名称/甲方纳税人代码/业主联系人/业主联系人电话等。
     幂等: 已存在的公司/人员/项目/关联自动复用, 可重复导入。
     """
+    from app.services.import_task import submit_import
     from app.services.real_project_import import import_real_project
+
     file_bytes = await file.read()
-    try:
-        result = import_real_project(db, file_bytes)
-    except Exception as e:  # noqa: BLE001
-        db.rollback()
-        raise HTTPException(status_code=400, detail=f"导入失败: {e}") from e
-    if not result.get("success"):
-        raise HTTPException(status_code=400, detail=result.get("message", "导入失败"))
-    return result
+    if not file_bytes:
+        raise HTTPException(status_code=400, detail="上传文件为空")
+    from app.utils.upload_security import check_upload_file
+    _err = check_upload_file(file_bytes, file.filename or "")
+    if _err:
+        raise HTTPException(status_code=400, detail=_err)
+
+    def _runner(sdb, data, progress):
+        return import_real_project(sdb, data, progress=progress,
+                                   skip_enrich=not deep_enrich)
+
+    tid = submit_import("projects", file_bytes, user["user_id"], _runner)
+    return {
+        "success": True,
+        "task_id": tid,
+        "entity_type": "projects",
+        "deep_enrich": deep_enrich,
+        "message": ("导入已提交, 快速模式(跳过 AI 补全)" if not deep_enrich
+                    else "导入已提交, 正在后台执行(单位信息补全较慢, 请耐心等待)"),
+    }
 
 
 @router.put("/{project_id}", response_model=ProjectResponse)

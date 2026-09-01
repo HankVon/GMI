@@ -3,6 +3,20 @@
 $ErrorActionPreference = "Continue"
 Set-Location $PSScriptRoot
 
+# 固定端口: 注册 Windows 管理员端口排除区间, 防止被系统动态保留抢占(仅管理员运行时生效, 失败不阻断启动)
+function Reserve-Port($p) {
+    try {
+        $isAdmin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+        if (-not $isAdmin) { return }
+        $existing = netsh interface ipv4 show excludedportrange protocol=tcp 2>$null
+        if ($existing -match "\s+$p\s") { return }
+        netsh interface ipv4 add excludedportrange protocol=tcp startport=$p numberofports=1 2>$null
+    } catch {}
+}
+Reserve-Port 8200
+Reserve-Port 5173
+Reserve-Port 11235
+
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host "  SSM Data Platform - Startup" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
@@ -64,8 +78,8 @@ $tableCheck = docker exec ssm-mysql mysql -ussm_user -pssm_pass ssm -e "SHOW TAB
 if ($tableCheck -match "field_metadata") {
     Write-Host "  Tables exist, skip DDL import" -ForegroundColor Green
 } else {
-    Write-Host "  Running sql/init_ddl.sql ..." -ForegroundColor Gray
-    $ddlResult = cmd /c "docker exec -i ssm-mysql mysql -ussm_user -pssm_pass --default-character-set=utf8mb4 ssm < sql\init_ddl.sql" 2>&1
+    Write-Host "  Running sql/001_init_ddl.sql ..." -ForegroundColor Gray
+    $ddlResult = cmd /c "docker exec -i ssm-mysql mysql -ussm_user -pssm_pass --default-character-set=utf8mb4 ssm < sql\001_init_ddl.sql" 2>&1
     if ($LASTEXITCODE -ne 0) {
         Write-Host "  ERROR: DDL import failed" -ForegroundColor Red
         Write-Host $ddlResult
@@ -94,7 +108,8 @@ Write-Host "`n[5/6] Starting crawl4ai server (port 11235)..." -ForegroundColor Y
 
 $crawl4aiRunning = Get-NetTCPConnection -LocalPort 11235 -ErrorAction SilentlyContinue
 if (-not $crawl4aiRunning) {
-    $c4aPython = "D:\anaconda\envs\graphenv\python.exe"
+    # crawl4ai 需 Python >=3.10; 本机安装在 miniconda3 GMI 环境(3.11)
+    $c4aPython = "E:\Software\miniconda3\envs\GMI\python.exe"
     $c4aServer = Join-Path $PSScriptRoot "crawl4ai-server\crawl4ai_server.py"
     $c4aLog = Join-Path $PSScriptRoot "runtime\crawl4ai-server.log"
     if (Test-Path $c4aPython) {
@@ -120,8 +135,8 @@ if (-not $crawl4aiRunning) {
 Write-Host "`n[6/6] Starting backend..." -ForegroundColor Yellow
 Push-Location backend
 
-# 后端端口: 统一从 config.py 读取(默认 8100, 已加入 Windows 管理员端口排除, 不会被系统动态保留抢占)
-$env:PORT = if ($env:PORT) { $env:PORT } else { "8100" }
+# 后端端口: 统一固定 8200(与 config.py / vite 代理 / docker 映射一致; 已加入 Windows 管理员端口排除)
+$env:PORT = if ($env:PORT) { $env:PORT } else { "8200" }
 
 # Check deps
 python -c "import fastapi; import sqlalchemy" 2>$null

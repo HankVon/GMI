@@ -101,6 +101,7 @@ async def tender_matches(
     status: Optional[str] = Query(None, description="状态 new/contacted/followed/ignored"),
     entity_type: Optional[str] = Query(None, description="person/company"),
     validity: Optional[str] = Query(None, description="valid/expired, 缺省全部"),
+    clue_id: Optional[int] = Query(None, description="按招标线索(clue_id)过滤, 仅返回该标讯的匹配"),
     limit: int = Query(50, ge=1, le=200),
     db: Session = Depends(get_db),
     user: dict = Depends(get_current_user),
@@ -114,6 +115,8 @@ async def tender_matches(
         stmt = stmt.where(TenderMatch.status == status)
     if entity_type:
         stmt = stmt.where(TenderMatch.entity_type == entity_type)
+    if clue_id is not None:
+        stmt = stmt.where(TenderMatch.clue_id == clue_id)
     if validity == "valid":
         stmt = stmt.where(TenderMatch.is_expired == False)
     elif validity == "expired":

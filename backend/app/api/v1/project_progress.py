@@ -7,7 +7,8 @@ from sqlalchemy import select, func
 from app.database import get_db
 from app.models.project import Project
 from app.models.project_progress import ProjectProgress
-from app.middleware.auth import require_permission
+from app.models.rbac import SysUser
+from app.middleware.auth import require_permission, get_current_user
 from app.schemas.project_progress import (
     ProjectProgressCreate, ProjectProgressUpdate, ProjectProgressResponse
 )
@@ -34,7 +35,7 @@ async def list_progress(
     project_id: int,
     page: int = 1, page_size: int = 100,
     db: Session = Depends(get_db),
-    user: dict = Depends(require_permission("api_project_crud")),
+    user: dict = Depends(get_current_user),
 ):
     _require_project(db, project_id)
     stmt = select(ProjectProgress).where(
@@ -64,6 +65,24 @@ async def create_progress(
     db.add(item)
     db.commit()
     db.refresh(item)
+    # 站内通知: 项目新增进展 → 通知项目负责人(关联账号)
+    try:
+        from app.services.notification import create_notifications
+        proj = _require_project(db, data.project_id)
+        if proj.manager_id:
+            mgr_uid = db.execute(
+                select(SysUser.id).where(
+                    SysUser.person_id == proj.manager_id,
+                    SysUser.is_deleted == False,  # noqa: E712
+                )
+            ).scalar_one_or_none()
+            if mgr_uid:
+                create_notifications(db, [mgr_uid], "progress",
+                                     f"项目「{(proj.name or '')[:24]}」新增进展",
+                                     data.title or "", related_type="project",
+                                     related_id=proj.id)
+    except Exception:  # noqa: BLE001 - 通知失败不影响主流程
+        pass
     return _to_response(item)
 
 

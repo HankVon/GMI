@@ -48,6 +48,16 @@ class CompanyResponse(BaseModel):
     ext_attrs: Optional[dict] = None
     created_at: datetime.datetime
     updated_at: datetime.datetime
+    # 列表聚合展示字段(分项查询页依赖)
+    bid_count: Optional[int] = 0
+    qua_count: Optional[int] = 0
+    credit_score: Optional[int] = None
+    latest_bid_at: Optional[str] = None
+    contact_phone: Optional[str] = None
+    ownership: Optional[str] = None
+    business_scope: Optional[str] = None
+    establish_date: Optional[str] = None
+    registered_capital: Optional[str] = None
     model_config = {"from_attributes": True}
 
 

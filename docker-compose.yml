@@ -51,6 +51,11 @@ services:
     environment:
       NEO4J_AUTH: neo4j/ssm_neo4j_2026
       NEO4J_dbms_security_auth__minimum__password__length: "8"
+      # 内存调优: 默认事务内存 1.3GiB 在批量建边时不足(导入1100+人员报 OOM)
+      NEO4J_dbms_memory_pagecache_size: "512m"
+      NEO4J_dbms_memory_heap_initial__size: "768m"
+      NEO4J_dbms_memory_heap_max__size: "1024m"
+      NEO4J_dbms_memory_transaction_total_max: "2g"
     ports:
       - "7474:7474"
       - "7687:7687"
@@ -79,11 +84,23 @@ services:
       SECRET_KEY: ${SECRET_KEY}
       DEBUG: "false"
       PORT: "8000"
-      CORS_ORIGINS: "http://localhost:5173,http://localhost:8080,http://localhost"
+      CORS_ORIGINS: "http://localhost:5173,http://localhost:8080,http://localhost:8200,http://localhost"
+      # 本地 Ollama 装在宿主机(Windows), backend 容器内通过 host.docker.internal 访问
+      OLLAMA_BASE_URL: "http://host.docker.internal:11434"
+      OLLAMA_MODEL: "qwen-graphrag:latest"
+      # 本地 crawl4ai 服务(宿主机 11235), 容器内走 host.docker.internal
+      CRAWL4AI_API_URL: "http://host.docker.internal:11235"
+      # 附件根目录: 显式指定, 与 volumes 的 ./uploads:/app/uploads 保持一致
+      # (代码统一走 app/utils/upload_paths.py 的 upload_root(), 不再用 parent 层级拼接)
+      UPLOAD_DIR: /app/uploads
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
-      - "8100:8000"
+      - "8200:8000"
     volumes:
       - ./sql:/sql:ro
+      - ./uploads:/app/uploads
+      - ./runtime/logs:/app/logs
     depends_on:
       mysql:
         condition: service_healthy

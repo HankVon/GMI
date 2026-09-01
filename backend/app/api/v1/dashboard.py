@@ -1,7 +1,7 @@
 """数据看板 API — HANDOFF §6.2.1"""
 from typing import Optional
 from datetime import date, timedelta
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import select, func, text, case
 from pydantic import BaseModel
@@ -11,15 +11,40 @@ from app.models.project import Project
 from app.models.person import Person
 from app.models.project_member import ProjectMember
 from app.models.field_meta import FieldMetadata
-from app.middleware.auth import get_current_user
+from app.middleware.auth import get_current_user, require_permission
 from app.services.cache_service import cache_service
 
-router = APIRouter(prefix="/dashboard", tags=["数据看板"])
+router = APIRouter(
+    prefix="/dashboard",
+    tags=["数据看板"],
+    dependencies=[Depends(require_permission("menu_dashboard"))],
+)
 
 
 def _default_date_range():
     today = date.today()
     return today.replace(year=today.year - 1).isoformat(), today.isoformat()
+
+
+def _project_scope_sql(scope, table: str = "project"):
+    """把数据范围转成 raw SQL WHERE 片段(供统计聚合用)。
+
+    返回 (where_sql, params); 未启用/全量时返回 ("", {}) 表示不过滤。
+    """
+    if not scope.enabled or scope.rule == "ALL":
+        return "", {}
+    conds = []
+    params = {}
+    if scope.dept_ids:
+        conds.append(f"{table}.department_id IN :scope_dept_ids")
+        params["scope_dept_ids"] = scope.dept_ids
+    obj_ids = scope.grants.get("project") or []
+    if obj_ids:
+        conds.append(f"{table}.id IN :scope_obj_ids")
+        params["scope_obj_ids"] = obj_ids
+    if not conds:
+        return "", {}
+    return " AND (" + " OR ".join(conds) + ")", params
 
 # ── 项目经营汇总 ──
 @router.get("/project-summary")
@@ -35,9 +60,17 @@ async def project_summary(
     date_from = date_from or df
     date_to = date_to or dt
 
+    # 数据范围过滤(分发权限): 未启用时保持现状(不过滤)
+    from app.services.data_scope_service import resolve_scope, scope_filter
+    scope = resolve_scope(db, user, "project")
+    scope_sql, scope_params = _project_scope_sql(scope)
+
     stmt = select(Project).where(Project.is_deleted == False).where(
         Project.created_at.between(date_from, date_to)
     )
+    cond = scope_filter(scope, Project, "project", dept_id_col=Project.department_id)
+    if cond is not None:
+        stmt = stmt.where(cond)
     if department_id:
         stmt = stmt.where(Project.department_id == department_id)
     projects = db.execute(stmt).scalars().all()
@@ -65,16 +98,18 @@ async def project_summary(
         SELECT DATE_FORMAT(created_at, '%Y-%m') as m, COUNT(*) as created_cnt,
                SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) as completed_cnt
         FROM project WHERE is_deleted=0 AND created_at BETWEEN :df AND :dt
+        {scope_sql}
         GROUP BY m ORDER BY m
-    """), {"df": date_from, "dt": date_to}).all()
+    """.format(scope_sql=scope_sql)), {"df": date_from, "dt": date_to, **scope_params}).all()
     by_month = [{"month": r[0], "created": r[1], "completed": r[2]} for r in rows]
 
     # 部门分布
     dept_rows = db.execute(text("""
         SELECT COALESCE(department_id,0), COUNT(*) FROM project
         WHERE is_deleted=0 AND created_at BETWEEN :df AND :dt
+        {scope_sql}
         GROUP BY department_id ORDER BY COUNT(*) DESC
-    """), {"df": date_from, "dt": date_to}).all()
+    """.format(scope_sql=scope_sql)), {"df": date_from, "dt": date_to, **scope_params}).all()
     by_department = [{"department_id": r[0], "department_name": f"Dept-{r[0]}", "count": r[1]} for r in dept_rows]
 
     res = {"total_projects": len(projects), "by_status": by_status, "by_month": by_month, "by_department": by_department}
@@ -161,8 +196,17 @@ async def dashboard_metrics(
     db: Session = Depends(get_db),
     user: dict = Depends(get_current_user),
 ):
+    # 数据范围过滤(分发权限): 未启用时保持现状(不过滤)
+    from app.services.data_scope_service import resolve_scope, scope_filter
+    scope = resolve_scope(db, user, "project")
+    scope_sql, scope_params = _project_scope_sql(scope)
+
+    cond = scope_filter(scope, Project, "project", dept_id_col=Project.department_id)
+    base = [Project.is_deleted == False]
+    if cond is not None:
+        base.append(cond)
     active = db.execute(
-        select(func.count(Project.id)).where(Project.is_deleted == False, Project.status == "active")
+        select(func.count(Project.id)).where(*base, Project.status == "active")
     ).scalar() or 0
 
     active_m = db.execute(
@@ -171,12 +215,14 @@ async def dashboard_metrics(
 
     avg_dur = db.execute(text(
         "SELECT COALESCE(AVG(DATEDIFF(COALESCE(end_date,CURDATE()),start_date)),0) FROM project WHERE is_deleted=0 AND status='completed'"
-    )).scalar() or 0
+        + scope_sql
+    ), scope_params).scalar() or 0
 
     this_year = date.today().year
     completed_yr = db.execute(text(
         "SELECT COUNT(*) FROM project WHERE is_deleted=0 AND status='completed' AND YEAR(end_date)=:y"
-    ), {"y": this_year}).scalar() or 0
+        + scope_sql
+    ), {"y": this_year, **scope_params}).scalar() or 0
 
     return {"success": True, "message": "ok", "data": {
         "active_projects": active, "active_members": active_m,
@@ -195,6 +241,17 @@ async def dynamic_dimension(
     db: Session = Depends(get_db),
     user: dict = Depends(get_current_user),
 ):
+    # ── 安全加固: entity_type/field_key/group_by 白名单校验(防 SQL 注入) ──
+    from app.services.dynamic_query import _assert_safe_field_key, ENTITY_TABLE_MAP
+    table = ENTITY_TABLE_MAP.get(entity_type)
+    if not table:
+        raise HTTPException(status_code=400, detail=f"非法实体类型: {entity_type}")
+    _assert_safe_field_key(field_key)
+    if group_by:
+        import re as _re
+        if not _re.match(r"^[A-Za-z_][A-Za-z0-9_]{0,63}$", group_by):
+            raise HTTPException(status_code=400, detail="group_by 参数非法")
+
     meta = db.execute(
         select(FieldMetadata).where(
             FieldMetadata.entity_type == entity_type,
@@ -206,7 +263,6 @@ async def dynamic_dimension(
     if not meta:
         return {"success": False, "message": f"field '{field_key}' not filterable", "data": {"buckets": []}}
 
-    table = entity_type
     json_path = f"$.{field_key}"
 
     if meta.data_type in ("select", "switch") and agg not in ("count",):
@@ -226,14 +282,22 @@ async def dynamic_dimension(
     else:
         group_clause = "dim_value"
 
+    # 数据范围过滤(仅项目维度统计防绕过)
+    scope_sql, scope_params = "", {}
+    if entity_type == "project":
+        from app.services.data_scope_service import resolve_scope
+        scope = resolve_scope(db, user, "project")
+        scope_sql, scope_params = _project_scope_sql(scope, table=table)
+
     sql = f"""
         SELECT {', '.join(group_cols)}, {agg_sql} as agg_val
         FROM {table}
         WHERE is_deleted=0 AND JSON_EXTRACT(ext_attrs,'{json_path}') IS NOT NULL
+        {scope_sql}
         GROUP BY {group_clause}
         ORDER BY agg_val DESC LIMIT 20
     """
-    rows = db.execute(text(sql)).all()
+    rows = db.execute(text(sql), scope_params).all()
     buckets = []
     for r in rows:
         if group_by:

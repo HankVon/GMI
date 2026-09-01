@@ -121,6 +121,7 @@ async def list_audit_logs(
     action: str = None,
     resource_type: str = None,
     user_id: int = None,
+    username: str = None,
     db: Session = Depends(get_db),
     user: dict = Depends(require_permission("api_audit")),
 ):
@@ -138,6 +139,8 @@ async def list_audit_logs(
         stmt = stmt.where(AuditLog.resource_type == resource_type)
     if user_id:
         stmt = stmt.where(AuditLog.user_id == user_id)
+    if username:
+        stmt = stmt.where(AuditLog.username.contains(username))
 
     total = db.execute(select(func.count()).select_from(stmt.subquery())).scalar() or 0
 

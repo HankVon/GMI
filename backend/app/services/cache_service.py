@@ -106,6 +106,36 @@ class CacheService:
             logger.warning("[cache] delete(%s) failed: %s", key, e)
             self._record_failure()
 
+    async def incr(self, key: str, ttl: int = 60) -> int | None:
+        """原子自增并设置过期(限流计数)。Redis 不可用返回 None(调用方降级放行)。"""
+        r = self._client()
+        if r is None:
+            return None
+        try:
+            n = await r.incr(key)
+            if n == 1:
+                await r.expire(key, ttl)
+            self._failure_count = 0
+            return n
+        except Exception as e:  # noqa: BLE001 - Redis 故障降级, 属设计意图
+            logger.warning("[cache] incr(%s) failed: %s", key, e)
+            self._record_failure()
+            return None
+
+    async def ping(self) -> bool:
+        """健康探测: Redis 连通性检查。"""
+        r = self._client()
+        if r is None:
+            return False
+        try:
+            await r.ping()
+            self._failure_count = 0
+            return True
+        except Exception as e:  # noqa: BLE001 - Redis 故障降级, 属设计意图
+            logger.warning("[cache] ping failed: %s", e)
+            self._record_failure()
+            return False
+
     async def delete_pattern(self, pattern: str):
         r = self._client()
         if r is None:

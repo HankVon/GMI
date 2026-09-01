@@ -33,6 +33,55 @@ async def list_option_sets(
     )
 
 
+@router.post("", status_code=status.HTTP_201_CREATED)
+async def create_option_set(
+    set_data: dict,
+    db: Session = Depends(get_db),
+    user: dict = Depends(require_permission("api_option_crud")),
+):
+    """新建选项集(幂等: code 已存在则返回已有项)。"""
+    code = str(set_data.get("code") or "").strip()
+    name = str(set_data.get("name") or "").strip()
+    if not code or not name:
+        raise HTTPException(status_code=422, detail="code 与 name 不能为空")
+    existing = db.execute(
+        select(OptionSet).where(OptionSet.code == code, OptionSet.is_deleted == False)
+    ).scalar_one_or_none()
+    if existing:
+        return {"id": existing.id, "code": existing.code, "name": existing.name}
+    option_set = OptionSet(
+        code=code, name=name,
+        description=set_data.get("description") or None,
+    )
+    db.add(option_set)
+    db.commit()
+    db.refresh(option_set)
+    return {"id": option_set.id, "code": option_set.code, "name": option_set.name}
+
+
+@router.delete("/{code}")
+async def delete_option_set(
+    code: str,
+    db: Session = Depends(get_db),
+    user: dict = Depends(require_permission("api_option_crud")),
+):
+    """删除选项集(软删除, 连同选项项一起置位)。"""
+    option_set = db.execute(
+        select(OptionSet).where(OptionSet.code == code, OptionSet.is_deleted == False)
+    ).scalar_one_or_none()
+    if not option_set:
+        raise HTTPException(status_code=404, detail="选项集不存在")
+    option_set.is_deleted = True
+    db.execute(
+        OptionItem.__table__.update()
+        .where(OptionItem.option_set_id == option_set.id, OptionItem.is_deleted == False)
+        .values(is_deleted=True)
+    )
+    db.commit()
+    await cache_service.invalidate_option_set(code)
+    return {"success": True}
+
+
 @router.get("/{code}/items")
 async def get_option_items(
     code: str,
@@ -162,3 +211,33 @@ async def update_option_item(
     await cache_service.invalidate_option_set(code)
 
     return {"id": item.id, "value": item.value, "label": item.label}
+
+
+@router.delete("/{code}/items/{value}")
+async def delete_option_item(
+    code: str,
+    value: str,
+    db: Session = Depends(get_db),
+    user: dict = Depends(require_permission("api_option_crud")),
+):
+    """删除选项项(软删除) — 同时失效缓存"""
+    option_set = db.execute(
+        select(OptionSet).where(OptionSet.code == code, OptionSet.is_deleted == False)
+    ).scalar_one_or_none()
+    if not option_set:
+        raise HTTPException(status_code=404, detail="选项集不存在")
+
+    item = db.execute(
+        select(OptionItem).where(
+            OptionItem.option_set_id == option_set.id,
+            OptionItem.value == value,
+            OptionItem.is_deleted == False,
+        )
+    ).scalar_one_or_none()
+    if not item:
+        raise HTTPException(status_code=404, detail="选项项不存在")
+
+    item.is_deleted = True
+    db.commit()
+    await cache_service.invalidate_option_set(code)
+    return {"success": True}

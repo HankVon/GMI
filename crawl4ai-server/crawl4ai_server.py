@@ -17,7 +17,7 @@ import logging
 import re
 import threading
 import time
-from typing import Optional
+from typing import Optional, Union
 
 import ddddocr
 from fastapi import FastAPI, HTTPException
@@ -45,6 +45,95 @@ class ScrapeRequest(BaseModel):
     url: str = Field(..., description="要抓取的页面 URL")
     max_depth: int = Field(1, ge=0, le=10, description="保留参数, 单页抓取固定为 1")
     wait_for: Optional[str] = Field(None, description="CSS 选择器, 等待元素出现(可选)")
+    page_timeout: Optional[int] = Field(None, ge=1000, le=600000, description="页面加载超时(毫秒), 默认 60000; AI 引擎 SPA 建议 180000+")
+    cookies: Optional[Union[list, str]] = Field(None, description="登录 cookie: Playwright 数组 [{name,value,domain,path}] 或 'a=b; c=d' 字符串(DevTools Copy as cURL 的 cookie 头直接粘)")
+    selector: Optional[str] = Field(None, description="仅抽取该 CSS 选择器容器的文本(如回答框), 提供后走交互式抓取分支")
+    extra_delay: Optional[float] = Field(2.0, ge=0, le=60, description="等待完成后额外停留秒数(SPA 异步渲染回答)")
+    query_text: Optional[str] = Field(None, description="要输入搜索框的问题文本(与 input_selector 配合)")
+    input_selector: Optional[str] = Field(None, description="搜索输入框 CSS 选择器, 指定后模拟 点击->输入->回车 (AI 引擎深链常不自动执行搜索)")
+
+
+# 常见桌面 Chrome UA(降低被 AI 引擎反爬拦截概率)
+_DESKTOP_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+)
+
+
+def _parse_cookie_header(header: str, url: str) -> list:
+    """把 'a=b; c=d' 形式的 cookie 头解析成 Playwright cookie 数组。
+
+    域名取请求 URL 的 host(host-only 匹配对同站 cookie 足够)。
+    """
+    from urllib.parse import urlparse
+    host = urlparse(url).netloc.split(":")[0]
+    out = []
+    for part in header.split(";"):
+        part = part.strip()
+        if not part or "=" not in part:
+            continue
+        name, _, value = part.partition("=")
+        name = name.strip()
+        if not name:
+            continue
+        out.append({"name": name, "value": value.strip(), "domain": host, "path": "/"})
+    return out
+
+
+async def _scrape_playwright(req: ScrapeRequest) -> dict:
+    """交互式抓取: 原生 Playwright 分支。
+
+    适用: 需要登录 cookie 的引擎(豆包/百度文心) 或 只取回答容器文本的 SPA。
+    导航用 domcontentloaded(不等 networkidle, SPA 长连接会死等), 再按选择器等待回答渲染。
+    """
+    timeout_ms = req.page_timeout or 180000
+    browser = None
+    try:
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(
+                headless=True,
+                args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
+            )
+            ctx = await browser.new_context(user_agent=_DESKTOP_UA)
+            cookies = req.cookies
+            if isinstance(cookies, str) and cookies.strip():
+                cookies = _parse_cookie_header(cookies, req.url)
+            if cookies:
+                await ctx.add_cookies(cookies)
+            page = await ctx.new_page()
+            await page.goto(req.url, timeout=timeout_ms, wait_until="domcontentloaded")
+            if req.input_selector and req.query_text:
+                # SPA 需先完成 JS 初始化再交互, 否则回车事件会丢(实测: 直接交互抓到落地页而非回答)
+                await page.wait_for_timeout(4000)
+                box = page.locator(req.input_selector).first
+                await box.click(timeout=10000)
+                await box.fill(req.query_text, timeout=10000)
+                await box.press("Enter")
+            if req.wait_for:
+                await page.wait_for_selector(req.wait_for, timeout=timeout_ms)
+            else:
+                await page.wait_for_timeout(3000)
+            if req.extra_delay and req.extra_delay > 0:
+                await page.wait_for_timeout(int(req.extra_delay * 1000))
+            if req.selector:
+                el = await page.query_selector(req.selector)
+                text = (await el.inner_text()).strip() if el else ""
+            else:
+                text = (await page.evaluate("document.body.innerText") or "").strip()
+            title = (await page.title() or "").strip()
+            await browser.close()
+            browser = None
+    except Exception as e:  # noqa: BLE001
+        logger.error("playwright scrape %s error: %s", req.url, e, exc_info=True)
+        if browser is not None:
+            try:
+                await browser.close()
+            except Exception:  # noqa: BLE001
+                pass
+        raise HTTPException(status_code=500, detail=f"playwright scrape error: {e}") from e
+    if not text:
+        raise HTTPException(status_code=502, detail="scrape returned empty text (可能被反爬拦截或需登录)")
+    return {"url": req.url, "title": title, "markdown": text[:50000], "published_at": ""}
 
 
 class CrawlRequest(BaseModel):
@@ -116,13 +205,19 @@ def _page_dict(result, url: str) -> dict:
 
 
 def _base_run_config(**overrides) -> CrawlerRunConfig:
-    """基础抓取配置: 等待 JS 渲染完成(SPA 站点关键), 可覆盖。"""
+    """基础抓取配置: 等待 JS 渲染完成(SPA 站点关键), 可覆盖。
+
+    性能优化: 默认 wait_until=domcontentloaded + 0 额外延迟。
+    原 networkidle 对带广告/统计脚本的页面会死等(实测单页 20s+),
+    而深度补全/搜索页为静态 SSR, domcontentloaded 已足够; 若个别 SPA
+    抓不到内容, 调用方可显式传 wait_until=networkidle 覆盖。
+    """
     config = CrawlerRunConfig(
         scraping_strategy=LXMLWebScrapingStrategy(),
         cache_mode=CacheMode.BYPASS,
-        page_timeout=60000,
-        wait_until="networkidle",
-        delay_before_return_html=3.0,
+        page_timeout=30000,
+        wait_until="domcontentloaded",
+        delay_before_return_html=0.0,
     )
     for k, v in overrides.items():
         setattr(config, k, v)
@@ -131,10 +226,18 @@ def _base_run_config(**overrides) -> CrawlerRunConfig:
 
 @app.post("/scrape")
 async def scrape(req: ScrapeRequest):
-    """单页抓取, 返回 {url,title,markdown,published_at}。"""
+    """单页抓取, 返回 {url,title,markdown,published_at}。
+
+    带 cookies/selector 的交互式抓取(登录态 AI 引擎)走原生 Playwright 分支;
+    普通页面走 crawl4ai 分支(page_timeout 可覆盖默认 60s)。
+    """
+    if req.cookies or req.selector:
+        return await _scrape_playwright(req)
     config = _base_run_config()
     if req.wait_for:
         config.wait_for = req.wait_for
+    if req.page_timeout:
+        config.page_timeout = req.page_timeout
     try:
         async with AsyncWebCrawler(config=_browser_config) as crawler:
             result = await crawler.arun(url=req.url, config=config)

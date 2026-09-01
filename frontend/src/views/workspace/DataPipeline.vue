@@ -243,7 +243,7 @@ function stageColor(s: string) { return stageColors[s] || "#909399"; }
 async function loadStats() {
   loading.value = true;
   try {
-    const res: any = await api.get("/pipeline/stats");
+    const res: any = await api.get("/pipeline/stats", { timeout: 60000 });
     stats.value = res.data || {};
     rules.value = res.data?.rules || null;
   } catch { /* 拦截器 */ }
@@ -253,7 +253,7 @@ async function loadStats() {
 async function loadLogs() {
   loadingLogs.value = true;
   try {
-    const res: any = await api.get("/pipeline/logs", { params: { limit: 300 } });
+    const res: any = await api.get("/pipeline/logs", { params: { limit: 300 }, timeout: 60000 });
     pipeLogs.value = res.data || [];
   } catch { /* 拦截器 */ }
   finally { loadingLogs.value = false; }
@@ -261,14 +261,14 @@ async function loadLogs() {
 
 async function clearLogs() {
   try {
-    await api.post("/pipeline/logs/clear");
+    await api.post("/pipeline/logs/clear", {}, { timeout: 60000 });
     pipeLogs.value = [];
   } catch { /* 拦截器 */ }
 }
 
 function startLogPolling() {
   stopLogPolling();
-  logTimer = window.setInterval(() => { loadLogs(); }, 1500);
+  logTimer = window.setInterval(() => { loadLogs(); }, 3000);
 }
 function stopLogPolling() {
   if (logTimer !== undefined) {
@@ -292,7 +292,7 @@ let prevRunning = false;
 
 async function pollStatus() {
   try {
-    const res: any = await api.get("/pipeline/status");
+    const res: any = await api.get("/pipeline/status", { timeout: 30000 });
     statusData.value = res.data || {};
     control.value = res.data?.control || null;
     const wasRunning = prevRunning;
@@ -303,8 +303,8 @@ async function pollStatus() {
     // 运行完成边沿检测: true -> false
     if (wasRunning && !nowRunning) {
       ElMessage.success("流水线执行完成");
-      loadStats();
-      loadLogs();   // 拉取最终日志
+      await loadStats();
+      await loadLogs();   // 拉取最终日志
     }
   } catch { /* 拦截器 */ }
 }
@@ -314,7 +314,7 @@ function startStatusPolling() {
   statusTimer = window.setInterval(async () => {
     await pollStatus();
     if (running.value) await loadLogs();   // 运行中持续拉日志, 空闲时不打扰
-  }, 3000);
+  }, 5000);
 }
 function stopStatusPolling() {
   if (statusTimer !== undefined) {
@@ -362,7 +362,13 @@ async function doControl(action: string) {
   } catch { /* 拦截器 */ }
 }
 
-onMounted(() => { loadStats(); pollStatus(); loadLogs(); startStatusPolling(); });
+// 错峰加载: 避免页面打开瞬间多个并发请求经 Cloudflare 隧道堆积导致全部 30s 超时
+onMounted(async () => {
+  await pollStatus();
+  await loadStats();
+  await loadLogs();
+  startStatusPolling();
+});
 onUnmounted(() => { stopStatusPolling(); stopLogPolling(); });
 </script>
 

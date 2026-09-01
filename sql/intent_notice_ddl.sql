@@ -25,6 +25,17 @@ CREATE TABLE IF NOT EXISTS `intent_notice` (
     `keywords`       VARCHAR(512)    DEFAULT NULL             COMMENT '命中关键词',
     `matched_entity` VARCHAR(512)    DEFAULT NULL             COMMENT '匹配到的人脉实体(JSON: [{type,id,name}])',
     `raw_text`       TEXT            DEFAULT NULL             COMMENT '原文摘要(结构化来源)',
+    -- 情报中心后台管理扩展(审核发布/分类展示)
+    `wf_status`      VARCHAR(32)     NOT NULL DEFAULT 'draft' COMMENT '流转状态: draft/pending/approved/published/offline/rejected',
+    `review_comment` VARCHAR(512)    DEFAULT NULL             COMMENT '审核意见',
+    `reviewer_id`    BIGINT          DEFAULT NULL             COMMENT '审核人id',
+    `reviewed_at`    DATETIME        DEFAULT NULL             COMMENT '审核时间',
+    `publisher_id`   BIGINT          DEFAULT NULL             COMMENT '发布人id',
+    `offline_at`     DATETIME        DEFAULT NULL             COMMENT '下架时间',
+    `stage`          VARCHAR(64)     DEFAULT NULL             COMMENT '项目阶段: 设计/动工/竣工/竣工验收',
+    `dataset_type`   VARCHAR(32)     NOT NULL DEFAULT 'project' COMMENT '数据集: project/proposed/landTrade',
+    `ext_attrs`      JSON            DEFAULT NULL             COMMENT '扩展字段JSON(工程地址/招标类型/资金来源/规模/层数/性质/项目代码等)',
+    `created_by`     BIGINT          DEFAULT NULL             COMMENT '创建人id',
     `created_at`     DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
     `updated_at`     DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     `is_deleted`     TINYINT(1)      NOT NULL DEFAULT 0,
@@ -33,5 +44,8 @@ CREATE TABLE IF NOT EXISTS `intent_notice` (
     KEY `idx_in_type` (`project_type`),
     KEY `idx_in_region` (`province`, `city`),
     KEY `idx_in_status` (`status`),
-    KEY `idx_in_published` (`published_at`)
+    KEY `idx_in_published` (`published_at`),
+    KEY `idx_in_wf_status` (`wf_status`),
+    KEY `idx_in_industry` (`industry`),
+    KEY `idx_in_dataset` (`dataset_type`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='意向性项目信息(结构化, 提前获取招标)';

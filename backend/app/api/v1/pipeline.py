@@ -7,6 +7,7 @@ GET  /pipeline/stats      各阶段统计(采集/筛选/图谱/回填)
 GET  /pipeline/rules      当前筛选规则(用户可查看/调整)
 """
 import threading
+import time
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -129,9 +130,13 @@ async def pipeline_logs_clear(user: dict = Depends(require_permission("api_compa
     return {"success": True, "message": "已清空流水线日志"}
 
 
-@router.get("/stats")
-async def pipeline_stats(db: Session = Depends(get_db), user: dict = Depends(get_current_user)):
-    """各阶段数据量统计。"""
+# stats 5s 内存缓存: 流水线运行期间页面高频轮询, 避免每请求重跑 6 个 SQL(含 JSON_EXTRACT 全表扫描)
+_STATS_TTL = 5.0
+_STATS_CACHE: dict = {"ts": 0.0, "data": None}
+
+
+def _build_stats_payload(db: Session) -> dict:
+    """统计各阶段数据量(重 SQL, 由 stats 接口经缓存调用)。"""
     clue_total = db.execute(select(func.count()).select_from(WebClue).where(
         WebClue.is_deleted == False)).scalar() or 0
     clue_accepted = db.execute(select(func.count()).select_from(WebClue).where(
@@ -155,19 +160,29 @@ async def pipeline_stats(db: Session = Depends(get_db), user: dict = Depends(get
     except Exception:  # noqa: BLE001
         kg_done = 0
     return {
-        "success": True,
-        "data": {
-            "collect": {
-                "clue_total": clue_total, "intent_total": intent_total, "bid_total": bid_total,
-            },
-            "filter": {
-                "clue_total": clue_total, "accepted": clue_accepted, "rejected": clue_rejected,
-                "pass_rate": round(clue_accepted / clue_total * 100, 1) if clue_total else 0,
-            },
-            "graph": {"relation_total": rel_total, "clue_kg_done": kg_done},
-            "backfill": {"companies": _company_count(db), "persons": _person_count(db)},
-            "rules": data_pipeline.FilterRules().to_dict(),
+        "collect": {
+            "clue_total": clue_total, "intent_total": intent_total, "bid_total": bid_total,
         },
+        "filter": {
+            "clue_total": clue_total, "accepted": clue_accepted, "rejected": clue_rejected,
+            "pass_rate": round(clue_accepted / clue_total * 100, 1) if clue_total else 0,
+        },
+        "graph": {"relation_total": rel_total, "clue_kg_done": kg_done},
+        "backfill": {"companies": _company_count(db), "persons": _person_count(db)},
+    }
+
+
+@router.get("/stats")
+async def pipeline_stats(db: Session = Depends(get_db), user: dict = Depends(get_current_user)):
+    """各阶段数据量统计(5s 内存缓存, 规则实时读取)。"""
+    now = time.monotonic()
+    if _STATS_CACHE["data"] is None or now - _STATS_CACHE["ts"] > _STATS_TTL:
+        _STATS_CACHE["data"] = _build_stats_payload(db)
+        _STATS_CACHE["ts"] = now
+    payload = _STATS_CACHE["data"]
+    return {
+        "success": True,
+        "data": {**payload, "rules": data_pipeline.FilterRules().to_dict()},
     }
 
 
@@ -185,3 +200,19 @@ def _person_count(db: Session) -> int:
 async def pipeline_rules(user: dict = Depends(get_current_user)):
     """当前筛选规则(默认值, 可在 run 请求中覆盖)。"""
     return {"success": True, "data": data_pipeline.FilterRules().to_dict()}
+
+
+@router.post("/build-intent-relations")
+async def build_intent_relations(payload: Optional[dict] = None,
+                                 db: Session = Depends(get_db),
+                                 user: dict = Depends(require_permission("api_company_crud"))):
+    """为意向批量建立真实关联实体(单位/人员), 写入 tender_match + Neo4j 图谱。
+
+    从意向标题/原文提取单位名/人名, 匹配存量 company/person, 使意向详情页
+    「涉及单位/角色」「关联实体」展示真实数据。intent_id 可选(缺省全部)。
+    """
+    from app.services import business_network
+    intent_id = (payload or {}).get("intent_id")
+    limit = (payload or {}).get("limit")
+    result = business_network.build_intent_relations(db, intent_id=intent_id, limit=limit)
+    return {"success": True, "data": result, "message": f"意向关联实体构建完成: 关联单位 {result['linked_companies']} / 人员 {result['linked_persons']}"}

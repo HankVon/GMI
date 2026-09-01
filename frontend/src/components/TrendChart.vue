@@ -5,28 +5,29 @@
 
 <script setup lang="ts">
 import { ref, onMounted, onBeforeUnmount, watch, shallowRef } from "vue";
-import * as echarts from "echarts";
-
 const props = defineProps<{ options: any; height?: string }>();
 const chartRef = ref<HTMLElement>();
 const chart = shallowRef<any>(null);
+let resizeHandler: (() => void) | null = null;
 
-function render() {
+async function render() {
   if (!chartRef.value) return;
   if (!chart.value) {
+    const echarts = await import("echarts");
     chart.value = echarts.init(chartRef.value);
   }
   chart.value.setOption(props.options, true);
 }
 
-onMounted(() => {
-  render();
-  window.addEventListener("resize", () => chart.value?.resize());
+onMounted(async () => {
+  await render();
+  resizeHandler = () => chart.value?.resize();
+  window.addEventListener("resize", resizeHandler);
 });
 
 onBeforeUnmount(() => {
+  if (resizeHandler) window.removeEventListener("resize", resizeHandler);
   chart.value?.dispose();
-  window.removeEventListener("resize", () => chart.value?.resize());
 });
 
 watch(() => props.options, render, { deep: true });

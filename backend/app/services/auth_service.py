@@ -9,7 +9,9 @@ from sqlalchemy.orm import Session
 from sqlalchemy import select
 
 from app.config import settings
-from app.models.rbac import SysUser, SysUserRole, SysRole, SysRolePermission, SysPermission
+from app.models.rbac import (
+    SysUser, SysUserRole, SysRole, SysRolePermission, SysPermission, SysUserPermission,
+)
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
@@ -74,6 +76,27 @@ def get_user_with_permissions(db: Session, user_id: int) -> Optional[dict]:
     else:
         perm_codes = []
 
+    # 用户级直授权限(绕过角色, 例外/临时授权) — 与角色权限并集
+    direct_result = db.execute(
+        select(SysPermission).join(
+            SysUserPermission, SysUserPermission.permission_id == SysPermission.id
+        ).where(
+            SysUserPermission.user_id == user_id,
+            SysUserPermission.is_deleted == False,
+            SysPermission.is_deleted == False,
+        )
+    ).scalars().all()
+    if direct_result:
+        seen = set(perm_codes)
+        for p in direct_result:
+            if p.code not in seen:
+                seen.add(p.code)
+                perm_codes.append(p.code)
+
+    # 数据范围(随权限缓存一起缓存, 授权变更时通过 invalidate_user_permissions 失效)
+    from app.services.data_scope_service import build_data_scope
+    data_scope = build_data_scope(db, user.id, roles=role_codes).to_dict()
+
     return {
         "user_id": user.id,
         "username": user.username,
@@ -82,6 +105,7 @@ def get_user_with_permissions(db: Session, user_id: int) -> Optional[dict]:
         "person_id": user.person_id,
         "roles": role_codes,
         "permissions": perm_codes,
+        "data_scope": data_scope,
     }
 
 

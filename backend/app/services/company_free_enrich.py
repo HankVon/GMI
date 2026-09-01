@@ -73,7 +73,7 @@ _SEARCH_ENGINES = [
     {"name": "so360", "url": "https://www.so.com/s?q={q}"},
     {"name": "bing", "url": "https://www.bing.com/search?mkt=zh-CN&q={q}"},
 ]
-_SEARCH_SLEEP = 3  # 每次查询前延时(秒), 避免触发风控
+_SEARCH_SLEEP = 1  # 每次查询前延时(秒), 避免触发风控(深度补全批量场景降为1s提速)
 
 # 域名可信度权重(DeepSeek 式可信度评分)
 _DOMAIN_WEIGHT = {
@@ -367,9 +367,9 @@ def enrich_from_search(db, company) -> dict:
             except Exception:  # noqa: BLE001
                 pass
             # 命中足够的条目即停(不必每个引擎×查询都打)
-            if len(all_items) >= 20:
+            if len(all_items) >= 12:
                 break
-        if len(all_items) >= 20:
+        if len(all_items) >= 12:
             break
 
     if not all_items:
@@ -408,7 +408,7 @@ def enrich_from_search(db, company) -> dict:
             rel_items,
             key=lambda it: (0 if any(d in (it.get("url") or "") for d in biz_domains) else 1),
         )
-        for it in ordered[:4]:
+        for it in ordered[:2]:
             url = (it.get("url") or "").strip()
             if not url:
                 continue
@@ -432,7 +432,8 @@ def enrich_from_search(db, company) -> dict:
         else:
             feed = "\n\n".join(f"[{it['title']}]\n{it['snippet']}" for it in rel_items[:4])
         if feed:
-            llm_result = extract_info(unit_name, feed)
+            # 弱算力下用 qwen2.5:7b 提速; 90s 超时覆盖单次生成(实测 30~60s)
+            llm_result = extract_info(unit_name, feed, timeout=90, model="qwen2.5:7b")
             if not phone and llm_result.get("contact_phone"):
                 phone = llm_result["contact_phone"]
             if not phone and llm_result.get("contact"):

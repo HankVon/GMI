@@ -14,7 +14,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from "vue";
+import { ref, watch, onMounted } from "vue";
 import api from "@/api";
 
 const props = withDefaults(defineProps<{ modelValue?: string[]; width?: string; placeholder?: string }>(),
@@ -23,6 +23,11 @@ const emit = defineEmits<{ (e: "update:modelValue", v: string[]): void; (e: "cha
 
 const value = ref<string[]>(props.modelValue || []);
 const options = ref<any[]>([]);
+
+// 外部清空/回填时同步(如筛选「清空条件」)
+watch(() => props.modelValue, (v) => {
+  value.value = v || [];
+});
 
 // checkStrictly=true: 允许只选省/市(不强制到县)
 const cascaderProps = { value: "value", label: "label", children: "children", checkStrictly: true };

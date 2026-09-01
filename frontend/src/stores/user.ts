@@ -41,5 +41,16 @@ export const useUserStore = defineStore("user", () => {
     return roleCodes.some((r) => roles.value.includes(r));
   }
 
-  return { token, username, displayName, roles, permissions, departmentId, login, logout, hasPermission, hasAnyRole };
+  /** 刷新页面后从 /auth/me 恢复权限(路由守卫/菜单渲染依赖) */
+  async function loadMe() {
+    const res: any = await api.get("/auth/me");
+    username.value = res.username || "";
+    displayName.value = res.display_name || "";
+    roles.value = res.roles || [];
+    permissions.value = res.permissions || [];
+    departmentId.value = res.department_id ?? null;
+    return res;
+  }
+
+  return { token, username, displayName, roles, permissions, departmentId, login, logout, loadMe, hasPermission, hasAnyRole };
 });
